@@ -55,7 +55,7 @@ export class PublicationController {
 		);		
 		// Ruta para obtener todas las publicaciones
 
-		this.app.getAppServer().get(
+	this.app.getAppServer().get(
 			`${this.route}/publications`,
 			authMiddleware, dynamicPermissionMiddleware,// Asegura autenticación para ver publicaciones
 			this.listPublications.bind(this)
@@ -620,28 +620,31 @@ export class PublicationController {
 			const userId = req.userId;
 
 			if (!userId) {
-				return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no autenticado' });
+				return res.status(StatusCodes.UNAUTHORIZED)
+				.json({ message: 'Usuario no autenticado' });
 			}
 
 			const userObjectId = new mongoose.Types.ObjectId(userId);
 
-			// Intentar eliminar el userId del array de likes usando $pull
 			const publication = await this.publicationModel.findByIdAndUpdate(
 				publicationId,
 				{
-					$addToSet: { likes: userObjectId },
-					$inc: { likesCount: 1 },
+					$pull: { likes: userObjectId },   // ← quita
+					$inc : { likesCount: -1 },        // ← –1
 				},
 				{ new: true }
 			).exec();
+
 			if (!publication) {
-				return res.status(StatusCodes.NOT_FOUND).json({ message: 'Publicación no encontrada' });
+				return res.status(StatusCodes.NOT_FOUND)
+				.json({ message: 'Publicación no encontrada' });
 			}
 
 			return res.status(StatusCodes.OK).json({
-				message: 'Has quitado el like a la publicación',
-				likesCount: publication.likes.length,
+				message    : 'Has quitado el like a la publicación',
+				likesCount : publication.likes.length,
 			});
+
 		} catch (error) {
 			console.error('Error al quitar el like a la publicación:', error);
 			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
@@ -650,6 +653,7 @@ export class PublicationController {
 			});
 		}
 	}
+
 	private async searchPublications(req: Request, res: Response): Promise<Response> {
 		try {
 			const { query } = req.query; // Obtenemos el parámetro 'query' de la solicitud
