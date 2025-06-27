@@ -10,6 +10,7 @@ import { ReportModel } from './schemas/report';
 
 import mongoose, { Schema, Document, Types } from 'mongoose'; // Asegúrate de que mongoose está importado
 import { analyzeImage } from '../moderation/images/nudenetService';
+import { analyzeVideo } from "../moderation/videos/nudenetVideoService";
 import { SettingsModel } from './schemas/settings';
 import {dynamicPermissionMiddleware} from '../middlware/permissionMiddleware';
 
@@ -55,7 +56,7 @@ export class PublicationController {
 		);		
 		// Ruta para obtener todas las publicaciones
 
-	this.app.getAppServer().get(
+		this.app.getAppServer().get(
 			`${this.route}/publications`,
 			authMiddleware, dynamicPermissionMiddleware,// Asegura autenticación para ver publicaciones
 			this.listPublications.bind(this)
@@ -266,7 +267,14 @@ export class PublicationController {
 						return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al analizar la imagen' });
 					}
 				}
-				// Si el archivo no es una imagen, no hacemos nada y continuamos
+				if (file.mimetype.startsWith("video/")) {
+					const isNSFW = await analyzeVideo(file.path);
+					if (isNSFW) {
+						return res
+						.status(StatusCodes.BAD_REQUEST)
+						.json({ message: "Contenido inapropiado detectado en el video" });
+					}
+				}
 			}
 
 			// Asegurarse de que careers es un array de ObjectId
@@ -288,7 +296,8 @@ export class PublicationController {
 					return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El usuario no tiene carreras asociadas' });
 				}
 			}
-
+			const urlBase = process.env.PUBLIC_URL || 'https://tu-dominio.com';
+			const fileUrl = file ? `${urlBase}/${file.path}` : undefined;
 			const newPublication = new this.publicationModel({
 				title,
 				content,
@@ -297,8 +306,14 @@ export class PublicationController {
 				filePath: file?.path,
 				fileType: file?.mimetype,
 				career: careerToUse,
+				fileUrl,
 			});
 			const result = await newPublication.save();
+			await result.populate({
+				path: 'author',
+				select: 'username',
+				populate: { path: 'profile', select: 'profilePicture' }
+			});
 
 			return res.status(StatusCodes.CREATED).json({ publication: result });
 		} catch (error) {

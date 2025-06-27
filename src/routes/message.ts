@@ -8,7 +8,7 @@ import { GroupModel } from './schemas/group';
 import { getUploadMiddleware } from '../middlware/upload';
 import { SettingsModel } from './schemas/settings';
 import SocketController from './socket';
-import { Types } from 'mongoose'; // Para validar ObjectId
+import { Types, PipelineStage } from 'mongoose';
 
 interface AuthRequest extends Request {
 	userId?: string;
@@ -80,6 +80,11 @@ export class MessageController {
 			`${this.route}/messages/:messageId`,
 			authMiddleware,
 			this.deleteMessage.bind(this)
+		);
+		this.app.getAppServer().get(
+			`${this.route}/messages/unread`,
+			authMiddleware,
+			this.getUnreadConversations.bind(this)
 		);
 	}
 	// Método para enviar un mensaje a través de HTTP
@@ -308,6 +313,67 @@ file: req.file,
 			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al eliminar el mensaje', error });
 		}
 	}
+	private async getUnreadConversations(req: AuthRequest, res: Response) {
+		try {
+			const userId = req.userId!;
+			/* ❶ Mensajes que aún NO ha leído el usuario */
+
+			const pipeline: PipelineStage[] = [
+				{
+					$match: {
+						receiver: new Types.ObjectId(userId),
+						isRead: false,
+					},
+				},
+
+				{ $sort: { createdAt: -1 } },
+
+				{
+					$group: {
+						_id: '$sender',
+						lastMessage: { $first: '$content' },
+						createdAt:  { $first: '$createdAt' },
+						unread:     { $sum: 1 },
+					},
+				},
+
+				{
+					$lookup: {
+						from: 'users',
+						localField: '_id',
+						foreignField: '_id',
+						as: 'user',
+					},
+				},
+				{ $unwind: '$user' },
+
+				{
+					$project: {
+						_id: 1,
+						isGroup: { $literal: false },
+						lastMessage: 1,
+						createdAt: 1,
+						unread: 1,
+						user: {
+							_id: '$user._id',
+							username: '$user.username',
+							profile: '$user.profile',
+						},
+					},
+				},
+
+				{ $limit: 10 },
+			];
+
+			const conversations = await this.messageModel.aggregate(pipeline).exec();
+			return res.status(StatusCodes.OK).json({ conversations });
+		} catch (err) {
+			console.error(err);
+			return res.status(StatusCodes.INTERNAL_SERVER_ERROR)
+			.json({ message: 'Error al obtener conversaciones', err });
+		}
+	}
+
 
 }
 

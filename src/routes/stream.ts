@@ -50,10 +50,7 @@ export class StreamController {
 		this.app.getAppServer().get(`${this.route}/streams/:streamId/viewers`,authMiddleware, this.listViewers.bind(this));
 		this.app.getAppServer().post(`${this.route}/streams/:streamId/kick`,authMiddleware,this.kickViewer.bind(this));
 
-
 	}
-
-	// dentro de StreamController
 
 	private async getStreams(req: Request, res: Response): Promise<Response> {
 		try {
@@ -81,7 +78,7 @@ export class StreamController {
 
 	private async createStream(req: AuthRequest, res: Response): Promise<Response> {
 		try {
-			const { title, visibility, careerIds } = req.body;
+			const { title, visibility, careerIds, description } = req.body;
 			const userId = req.userId;
 			if (!userId) {
 				return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no autenticado' });
@@ -101,6 +98,7 @@ export class StreamController {
 				streamKey,
 				visibility,
 				active: true,
+				description
 			};
 
 			// Manejar opciones según la visibilidad
@@ -161,9 +159,6 @@ export class StreamController {
 			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al detener el stream' });
 		}
 	}
-
-
-	// stream.ts (continuación)
 
 	private async startScreenShare(req: AuthRequest, res: Response): Promise<Response> {
 		try {
@@ -320,10 +315,6 @@ export class StreamController {
 		}
 	}
 
-	// src/routes/stream.ts  (dentro de la clase StreamController)
-
-	// dentro de StreamController
-
 	private async listViewers(req: Request, res: Response) {
 		const { streamId } = req.params;
 
@@ -343,7 +334,6 @@ export class StreamController {
 
 		return res.status(StatusCodes.OK).json({ viewers: users });
 	}
-
 
 	private async kickViewer(req: AuthRequest, res: Response) {
 		const { streamId } = req.params;
@@ -370,7 +360,6 @@ export class StreamController {
 
 		return res.sendStatus(StatusCodes.NO_CONTENT);
 	}
-
 
 }
 

@@ -116,8 +116,8 @@ export default class App {
 	}
 
 	private async setupDatabase() {
-		const connectionString = `mongodb://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}:${this.databasePort}/${this.databaseName}`;
-			//	const connectionString = `mongodb+srv://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}/${this.databaseName}?retryWrites=true&w=majority&appName=Cluster0`;
+	///const connectionString = `mongodb://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}:${this.databasePort}/${this.databaseName}`;
+	const connectionString = `mongodb+srv://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}/${this.databaseName}?retryWrites=true&w=majority&appName=Cluster0`;
 
 			console.log('connection', connectionString);
 		try {

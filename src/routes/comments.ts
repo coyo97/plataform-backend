@@ -181,7 +181,7 @@ export class CommentController {
 			}
 
 			// **Emitir el evento de nuevo comentario a la sala de la publicación**
-			this.socketController.emitToRoom(publicationId, 'new-comment', populatedComment);
+			this.socketController.emitToRoom(publicationId, 'comment:new', populatedComment);
 
 			return res.status(StatusCodes.CREATED).json({ comment: savedComment });
 		} catch (error) {
@@ -210,6 +210,12 @@ export class CommentController {
 
 			comment.content = content;
 			const updatedComment = await comment.save();
+			await updatedComment.populate('author', 'username');
+			this.socketController.emitToRoom(
+				(updatedComment.publication as any).toString(), 
+				'comment:update',
+				updatedComment
+			);
 
 			return res.status(StatusCodes.OK).json({ comment: updatedComment });
 		} catch (error) {
@@ -239,6 +245,12 @@ export class CommentController {
 					comment.publication,
 					{ $inc: { commentsCount: -1 } }
 				);
+				this.socketController.emitToRoom(
+					(comment.publication as any).toString(),  
+					'comment:delete',
+					(comment._id as any).toString()          
+				);
+
 			}
 			return res.status(StatusCodes.OK).json({ message: 'Comment deleted successfully' });
 		} catch (error) {
