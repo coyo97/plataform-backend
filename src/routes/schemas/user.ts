@@ -4,7 +4,7 @@ import { ICareer } from "./career"; // Importa el modelo de carrera
 
 export interface IUser extends Document {
 	_id: mongoose.Types.ObjectId;
-	username: string;
+	username: string; // será tratado como nombre en el frontend
 	email: string;
 	password: string;
 	roles: IRole[];
@@ -12,6 +12,9 @@ export interface IUser extends Document {
 	status: string;
 	friends: mongoose.Types.ObjectId[]; // Lista de amigos
 	friendRequests: mongoose.Types.ObjectId[]; // Solicitudes de amistad recibidas
+	apellidoPaterno?: string;
+	apellidoMaterno?: string;
+
 	//para rastrear
 	reportCount: number;
 	uniqueReporters: Types.ObjectId[];
@@ -29,6 +32,10 @@ const userSchema: Schema<IUser> = new Schema({
 	status: { type: String, enum: ['active', 'deactivated', 'blacklisted'], default: 'active' },
 	friends: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Añadido
 	friendRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Añadido
+
+	apellidoPaterno: { type: String, required: false },
+	apellidoMaterno: { type: String, required: false },
+
 	//para rastrear usuario y contar sus reportes
 	reportCount: { type: Number, default: 0 },
 	uniqueReporters: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
