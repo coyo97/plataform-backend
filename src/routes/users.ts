@@ -58,76 +58,90 @@ export class UserController {
 		this.transporter = nodemailer.createTransport(smtpOptions);
 		console.log(`User Controller initialized at ${this.route}`);
 	}
+private initRoutes(): void {
+	console.log(`User Controller initialized at ${this.route}`);
 
-	private initRoutes(): void {
-		console.log(`User Controller initialized at ${this.route}`);
-		// Ruta para obtener la lista de usuarios con la imagen de perfil
-		// Permitimos que los usuarios autenticados accedan a esta ruta
-		this.express.get(this.route, authMiddleware, this.getUsers.bind(this));
-		// Ruta para registrar un nuevo usuario con carreras
-		// Permite que cualquier persona se registre
-		this.express.post(this.route, this.registerUser.bind(this));
-		// Ruta para actualizar un usuario
-		// Solo el usuario autenticado puede actualizar su propio perfil
-		this.express.put(`${this.route}/:id`, authMiddleware, this.updateUser.bind(this));
-		// Ruta para eliminar un usuario
-		// Solo los administradores pueden eliminar usuarios
-		this.express.delete(`${this.route}/:id`, authMiddleware, adminMiddleware,  this.deleteUser.bind(this));
-		// Ruta para obtener el perfil del usuario autenticado
-		this.express.get(`${this.route}/me`, authMiddleware, this.getMe.bind(this));
-		// En UserController.ts
-		this.express.put(
-			`${this.route}/:id/roles`,
-			authMiddleware,
-			//		adminMiddleware,
-			[
-				body('roles').isArray().withMessage('roles debe ser un array de IDs de roles'),
-				body('roles.*').isMongoId().withMessage('Cada rol debe ser un ID válido'),
-			],
-			this.assignRoles.bind(this)
-		);
+	// Ruta para obtener la lista de usuarios con la imagen de perfil
+	// Permitimos que los usuarios autenticados accedan a esta ruta
+	this.express.get(this.route, authMiddleware, this.getUsers.bind(this));
 
-		this.express.put(`${this.route}/:id/deactivate`, authMiddleware, adminMiddleware, this.deactivateUser.bind(this));
-		this.express.put(`${this.route}/:id/reactivate`, authMiddleware,adminMiddleware, this.reactivateUser.bind(this));
-		this.express.put(`${this.route}/:id/blacklist`, authMiddleware, adminMiddleware, this.blacklistUser.bind(this));
+	// Ruta para registrar un nuevo usuario con carreras
+	// Permite que cualquier persona se registre
+	this.express.post(this.route, this.registerUser.bind(this));
 
-		// Ruta para enviar una solicitud de amistad
-		this.express.post(`${this.route}/:id/send-friend-request`, authMiddleware, this.sendFriendRequest.bind(this));
+	// Ruta para obtener el perfil del usuario autenticado
+	this.express.get(`${this.route}/me`, authMiddleware, this.getMe.bind(this));
 
-		// Ruta para cancelar una solicitud de amistad
-		this.express.post(`${this.route}/:id/cancel-friend-request`, authMiddleware, this.cancelFriendRequest.bind(this));
+	// Ruta para buscar usuarios
+	this.express.get(`${this.route}/search`, authMiddleware, this.searchUsers.bind(this));
 
-		// Ruta para aceptar una solicitud de amistad
-		this.express.post(`${this.route}/:id/accept-friend-request`, authMiddleware, this.acceptFriendRequest.bind(this));
+	// Ruta para obtener las solicitudes de amistad recibidas
+	this.express.get(`${this.route}/friend-requests`, authMiddleware, this.getFriendRequests.bind(this));
 
-		// Ruta para rechazar una solicitud de amistad
-		this.express.post(`${this.route}/:id/reject-friend-request`, authMiddleware, this.rejectFriendRequest.bind(this));
+	// Ruta para obtener la lista de amigos
+	this.express.get(`${this.route}/friends`, authMiddleware, this.getFriends.bind(this));
 
-		// Ruta para obtener las solicitudes de amistad recibidas
-		this.express.get(`${this.route}/friend-requests`, authMiddleware, this.getFriendRequests.bind(this));
+	// Ruta para obtener la lista de usuarios bloqueados
+	this.express.get(`${this.route}/blocked-users`, authMiddleware, this.getBlockedUsers.bind(this));
 
-		// Ruta para obtener la lista de amigos
-		this.express.get(`${this.route}/friends`, authMiddleware, this.getFriends.bind(this));
+	// Ruta para desactivar o reactivar todos (bulk actions)
+	this.app.getAppServer().put( `${this.route}/bulk-action`, authMiddleware, dynamicPermissionMiddleware, this.bulkAction.bind(this));
 
-		// Ruta para buscar usuarios
-		this.express.get(`${this.route}/search`, authMiddleware, this.searchUsers.bind(this));
-		// Ruta para eliminar a un amigo
-		this.express.delete(`${this.route}/:id/remove-friend`, authMiddleware, this.removeFriend.bind(this));
-		// Ruta para bloquear a un usuario
-		this.express.post(`${this.route}/:id/block`, authMiddleware, this.blockUser.bind(this));
-		// Ruta para obtener la lista de usuarios bloqueados
-		this.express.get(`${this.route}/blocked-users`, authMiddleware, this.getBlockedUsers.bind(this));
-		// Ruta para desbloquear a un usuario
-		this.express.post(`${this.route}/:id/unblock`, authMiddleware, this.unblockUser.bind(this));
+	// Rutas de recuperación de contraseña
+	this.express.post(`${this.route}/forgot-password`, this.forgotPassword.bind(this));
+	this.express.post(`${this.route}/reset-password/:token`, this.resetPassword.bind(this));
 
-		this.express.put(`${this.route}/:id/bulk-action`,authMiddleware, adminMiddleware, this.bulkAction.bind(this));
-		this.express.post(`${this.route}/forgot-password`, this.forgotPassword.bind(this));
-		this.express.post(`${this.route}/reset-password/:token`, this.resetPassword.bind(this));
+	// Inicializar la ruta de login
+	this.initLoginRoute();
 
-		// Inicializar la ruta de login
-		this.initLoginRoute();
-	}
-	// Método para obtener la lista de usuarios
+	// RUTAS CON id AL FINAL
+
+	// Ruta para actualizar un usuario
+	// Solo el usuario autenticado puede actualizar su propio perfil
+	this.express.put(`${this.route}/:id`, authMiddleware, this.updateUser.bind(this));
+
+	// Ruta para eliminar un usuario
+	// Solo los administradores pueden eliminar usuarios
+	this.express.delete(`${this.route}/:id`, authMiddleware, adminMiddleware, this.deleteUser.bind(this));
+
+	// En UserController.ts
+	this.express.put(
+		`${this.route}/:id/roles`,
+		authMiddleware,
+		//		adminMiddleware,
+		[
+			body('roles').isArray().withMessage('roles debe ser un array de IDs de roles'),
+			body('roles.*').isMongoId().withMessage('Cada rol debe ser un ID válido'),
+		],
+		this.assignRoles.bind(this)
+	);
+
+	this.express.put(`${this.route}/:id/deactivate`, authMiddleware, adminMiddleware, this.deactivateUser.bind(this));
+	this.express.put(`${this.route}/:id/reactivate`, authMiddleware, adminMiddleware, this.reactivateUser.bind(this));
+	this.express.put(`${this.route}/:id/blacklist`, authMiddleware, adminMiddleware, this.blacklistUser.bind(this));
+
+	// Ruta para enviar una solicitud de amistad
+	this.express.post(`${this.route}/:id/send-friend-request`, authMiddleware, this.sendFriendRequest.bind(this));
+
+	// Ruta para cancelar una solicitud de amistad
+	this.express.post(`${this.route}/:id/cancel-friend-request`, authMiddleware, this.cancelFriendRequest.bind(this));
+
+	// Ruta para aceptar una solicitud de amistad
+	this.express.post(`${this.route}/:id/accept-friend-request`, authMiddleware, this.acceptFriendRequest.bind(this));
+
+	// Ruta para rechazar una solicitud de amistad
+	this.express.post(`${this.route}/:id/reject-friend-request`, authMiddleware, this.rejectFriendRequest.bind(this));
+
+	// Ruta para eliminar a un amigo
+	this.express.delete(`${this.route}/:id/remove-friend`, authMiddleware, this.removeFriend.bind(this));
+
+	// Ruta para bloquear a un usuario
+	this.express.post(`${this.route}/:id/block`, authMiddleware, this.blockUser.bind(this));
+
+	// Ruta para desbloquear a un usuario
+	this.express.post(`${this.route}/:id/unblock`, authMiddleware, this.unblockUser.bind(this));
+}
+
 	// Método para obtener la lista de usuarios
 	private async getUsers(req: Request, res: Response): Promise<void> {
 		try {
@@ -172,15 +186,28 @@ export class UserController {
 	}
 
 	// Método para registrar un nuevo usuario con carreras
+	// Dentro de UserController.ts
+
 	private async registerUser(req: Request, res: Response): Promise<void> {
-		const { username, email, password, careers, apellidoPaterno, apellidoMaterno } = req.body;
+		// NUEVO: aceptar opcionales accountType/schoolName
+		const {
+			username,
+			email,
+			password,
+			careers,             // puede venir undefined o []
+			apellidoPaterno,
+			apellidoMaterno,
+			accountType,         // opcional: 'guest' | 'university'
+			schoolName           // opcional
+		} = req.body;
+
 		const saltRounds = 10;
 
 		try {
 			const hashedPassword = await bcrypt.hash(password, saltRounds);
 
+			// Mantengo tu rol 'user' (no rompo permisos actuales)
 			let role: IRole | null = await RoleModel(this.app.getClientMongoose()).findOne({ name: 'user' }).exec();
-
 			if (!role) {
 				const PermissionModelInstance = PermissionModel(this.app.getClientMongoose());
 
@@ -219,26 +246,40 @@ export class UserController {
 				await role.save();
 			}
 
-			const requestObject: Partial<IUser> = {
-				username,
-				email,
-				password: hashedPassword,
-				roles: [role._id],
-				careers,
-				status: 'active',
-				...(apellidoPaterno && { apellidoPaterno }),
-				...(apellidoMaterno && { apellidoMaterno }),
-			};
+			// Normalización suave (sin romper backend)
+			const normalizedAccountType: 'guest' | 'university' =
+				accountType === 'university' ? 'university' : 'guest';
 
-			const newUser = new this.user(requestObject);
-			const result = await newUser.save();
+			const normalizedCareers: Types.ObjectId[] =
+				normalizedAccountType === 'university' && Array.isArray(careers)
+					? careers.filter(Boolean)
+					: []; // invitados => []
 
-			if (result) {
-				res.status(StatusCodes.CREATED).json({ msg: "User created", user: result });
-				return;
-			}
+					const requestObject: Partial<IUser> = {
+						username,
+						email,
+						password: hashedPassword,
+						roles: [role._id],
+						careers: normalizedCareers,     // [] para invitados
+						status: 'active',
+						...(apellidoPaterno && { apellidoPaterno }),
+						...(apellidoMaterno && { apellidoMaterno }),
 
-			res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ msg: "User not created" });
+						// NUEVO (opcionales)
+						accountType: normalizedAccountType,      // si no mandan, queda 'guest'
+						...(schoolName ? { schoolName } : {}),
+						// universityVerification la dejamos vacía por ahora (opcional)
+					};
+
+					const newUser = new this.user(requestObject);
+					const result = await newUser.save();
+
+					if (result) {
+						res.status(StatusCodes.CREATED).json({ msg: "User created", user: result });
+						return;
+					}
+
+					res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ msg: "User not created" });
 		} catch (error) {
 			console.error('Error creating user:', error);
 			res.status(StatusCodes.BAD_REQUEST).json({ msg: "Error creating user", error });

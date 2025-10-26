@@ -32,6 +32,7 @@ import { CycleController   } from './routes/cycle';
 import { SubjectController } from './routes/subject';
 import { UnitController    } from './routes/unit';
 import { ResourceController } from './routes/resource';
+import {AccessPoliciesController} from './routes/accessPolicies';
 
 if (process.env.NODE_ENV !== 'production') {
 	dotenv.config();
@@ -103,7 +104,7 @@ export default class App {
 		new NotificationController(this, `/${this.apiVersion}/${this.apiPrefix}`,  this.socketController);
 		new FileFormatController(this, `/${this.apiVersion}/${this.apiPrefix}`);
 		new SettingsController(this, `/${this.apiVersion}/${this.apiPrefix}`);
-		new ReportController(this, `/${this.apiVersion}/${this.apiPrefix}`);
+		new ReportController(this, `/${this.apiVersion}/${this.apiPrefix}`, this.socketController);
 		new PermissionsController(this, `/${this.apiVersion}/${this.apiPrefix}`);
 		new AcademicHelpController(this, `/${this.apiVersion}/${this.apiPrefix}`);
 		new HelpThreadController(this, `/${this.apiVersion}/${this.apiPrefix}`, this.socketController);
@@ -112,12 +113,13 @@ export default class App {
 		new SubjectController(this, `/${this.apiVersion}/${this.apiPrefix}`);
 		new UnitController   (this, `/${this.apiVersion}/${this.apiPrefix}`);
 		new ResourceController(this, `/${this.apiVersion}/${this.apiPrefix}`);
+		new AccessPoliciesController(this, `/${this.apiVersion}/${this.apiPrefix}`);
 
 	}
 
 	private async setupDatabase() {
-const connectionString = `mongodb://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}:${this.databasePort}/${this.databaseName}`;
-//const connectionString = `mongodb+srv://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}/${this.databaseName}?retryWrites=true&w=majority&appName=Cluster0`;
+//const connectionString = `mongodb://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}:${this.databasePort}/${this.databaseName}`;
+const connectionString = `mongodb+srv://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}/${this.databaseName}?retryWrites=true&w=majority&appName=Cluster0`;
 
 			console.log('connection', connectionString);
 		try {

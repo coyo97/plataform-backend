@@ -11,7 +11,8 @@ export interface IPublication extends Document {
 	created_at: Date;
 	filePath?: string;
 	fileType?: string;
-	career: ICareer['_id']; // Nuevo campo para la carrera
+	career: ICareer['_id'] | null; // Nuevo campo para la carrera
+	  audience?: 'guest' | 'university';
 	likes: Types.ObjectId[]; // Array de ObjectId
 	likesCount: number; // Añadido
 	commentsCount: number; // Añadido
@@ -27,7 +28,8 @@ const publicationSchema: Schema<IPublication> = new Schema({
 	created_at: { type: Date, default: Date.now },
 	filePath: { type: String },
 	fileType: { type: String },
-	career: { type: mongoose.Schema.Types.ObjectId, ref: 'Career', required: true }, // Campo obligatorio para la carrera
+	career: { type: mongoose.Schema.Types.ObjectId, ref: 'Career', required: false, default: null }, // Campo obligatorio para la carrera
+	audience: { type: String, enum: ['guest', 'university'], default: 'university' },
 	likes: [{ type: Schema.Types.ObjectId, ref: 'User', default: [] }],
 	likesCount: { type: Number, default: 0 }, // Añadido
 	commentsCount: { type: Number, default: 0 }, // Añadido

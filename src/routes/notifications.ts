@@ -26,11 +26,7 @@ export class NotificationController {
 
 	private initRoutes(): void {
 		// Ruta para que los usuarios obtengan sus notificaciones
-		this.app.getAppServer().get(
-			`${this.route}/notifications`,
-			authMiddleware,
-			this.getUserNotifications.bind(this)
-		);
+		this.app.getAppServer().get( `${this.route}/notifications`, authMiddleware, this.getUserNotifications.bind(this));
 
 		// Ruta para que los administradores envíen notificaciones
 		this.app.getAppServer().post(
@@ -41,17 +37,9 @@ export class NotificationController {
 		);
 
 		// Ruta para marcar una notificación como leída
-		this.app.getAppServer().put(
-			`${this.route}/notifications/:notificationId/read`,
-			authMiddleware,
-			this.markAsRead.bind(this)
-		);
+		this.app.getAppServer().put( `${this.route}/notifications/:notificationId/read`, authMiddleware, this.markAsRead.bind(this));
 		// Ruta para eliminar una notificación
-		this.app.getAppServer().delete(
-			`${this.route}/notifications/:notificationId`,
-			authMiddleware,
-			this.deleteNotification.bind(this)
-		);
+		this.app.getAppServer().delete( `${this.route}/notifications/:notificationId`, authMiddleware, this.deleteNotification.bind(this));
 	}
 
 	private async getUserNotifications(req: AuthRequest, res: Response): Promise<Response> {

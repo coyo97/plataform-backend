@@ -25,31 +25,26 @@ export class AcademicHelpController {
 	private initRoutes(): void {
 		const server = this.app.getAppServer();
 
-		server.post(
-			`${this.route}/academic-help`,
-			authMiddleware,
-			this.getUploadMiddleware(), // para archivos
-			this.createHelp.bind(this)
-		);
+ // Crear
+    server.post( `${this.route}/academic-help`, authMiddleware, this.getUploadMiddleware(), this.createHelp.bind(this),);
 
-		server.get(
-			`${this.route}/academic-help`,
-			authMiddleware,
-			this.getHelpList.bind(this)
-		);
-		this.app.getAppServer().get(
-			`${this.route}/academic-help/:id`,
-			authMiddleware,
-			this.getHelpById.bind(this)
-		);
+    // Listado general (con filtros)
+    server.get( `${this.route}/academic-help`, authMiddleware, this.getHelpList.bind(this),);
 
-		this.app.getAppServer().put(
-			`${this.route}/academic-help/:id/resolve`,
-			authMiddleware,
-			this.resolveHelp.bind(this)
-		);
+    // Listado SOLO del usuario autenticado
+    server.get( `${this.route}/my-academic-help`, authMiddleware, this.getMyHelpList.bind(this),);
 
+    // Es importante declarar primero rutas específicas para no colisionar con :id
+    server.put( `${this.route}/academic-help/:id/resolve`, authMiddleware, this.resolveHelp.bind(this),);
 
+    // Obtener por id (lectura pública autenticada)
+    server.get( `${this.route}/academic-help/:id`, authMiddleware, this.getHelpById.bind(this),);
+
+    // Actualizar SOLO si es autor (archivo opcional)
+    server.put( `${this.route}/academic-help/:id`, authMiddleware, this.getUploadMiddleware(), this.updateMyHelp.bind(this),);
+
+    // Eliminar SOLO si es autor
+    server.delete( `${this.route}/academic-help/:id`, authMiddleware, this.deleteMyHelp.bind(this),);	
 	}
 
 	private getUploadMiddleware() {
@@ -94,29 +89,29 @@ export class AcademicHelpController {
 
 	private async getHelpList(req: AuthRequest, res: Response): Promise<void> {
 		try {
-			const {
-				careerId, subjectId, cycleId,
-				requestType, status
-			} = req.query;
+			const { careerId, subjectId, cycleId, requestType, status, facultyId, unitId } = req.query as any;
 
 			const q: any = {};
-			if (careerId   ) q.careerId    = careerId;
-			if (subjectId  ) q.subjectId   = subjectId;
-			if (cycleId    ) q.cycleId     = cycleId;
+			if (careerId)    q.careerId    = careerId;
+			if (subjectId)   q.subjectId   = subjectId;
+			if (cycleId)     q.cycleId     = cycleId;
+			if (facultyId)   q.facultyId   = facultyId;
+			if (unitId)      q.unitId      = unitId;  
 			if (requestType) q.requestType = requestType;
-			if (status     ) q.status      = status;
-
+			if (status)      q.status      = status;
 			/* fallback filtros legacy */
 			if (req.query.subject) q.subject = req.query.subject;
 
 			const helpList = await this.helpModel
 			.find(q)
-			.sort({ created_at:-1 })
+			.sort({ created_at: -1 })
 			.populate('user', 'username profilePicture')
 			.populate('subjectId', 'name code')
-			.populate('cycleId')             // si quieres ver datos del ciclo
+			.populate('careerId', 'name')   
+			.populate('facultyId', 'name') 
+			.populate('unitId', 'name')  
+			.populate('cycleId', 'name')  
 			.exec();
-
 			res.status(StatusCodes.OK).json({ helps: helpList });
 		} catch (err) {
 			console.error('Error listando ayudas:', err);
@@ -174,6 +169,119 @@ export class AcademicHelpController {
 			res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al resolver ayuda', error });
 		}
 	}
+	// Nuevo: lista SOLO las ayudas del usuario autenticado
+	private async getMyHelpList(req: AuthRequest, res: Response): Promise<void> {
+		try {
+			const userId = req.userId;
+			if (!userId) {
+				res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no autenticado' });
+				return;
+			}
 
+			const helps = await this.helpModel
+			.find({ user: userId })
+			.sort({ created_at: -1 })
+			.populate('subjectId', 'name code')
+			.populate('careerId', 'name')
+			.populate('facultyId', 'name')
+			.populate('unitId', 'name')
+			.populate('cycleId', 'name')
+			.exec();
+
+			res.status(StatusCodes.OK).json({ helps });
+		} catch (error) {
+			console.error('Error al listar mis ayudas:', error);
+			res
+			.status(StatusCodes.INTERNAL_SERVER_ERROR)
+			.json({ message: 'Error al listar mis ayudas', error });
+		}
+	}
+	// Nuevo: actualizar SOLO si es autor (acepta archivo opcional)
+	private async updateMyHelp(req: AuthRequest, res: Response): Promise<void> {
+		try {
+			const { id } = req.params;
+			const userId = req.userId;
+
+			const help = await this.helpModel.findById(id).exec();
+			if (!help) {
+				res.status(StatusCodes.NOT_FOUND).json({ message: 'Ayuda no encontrada' });
+				return;
+			}
+			if (help.user.toString() !== userId) {
+				res.status(StatusCodes.FORBIDDEN).json({ message: 'No tienes permiso para editar esta ayuda' });
+				return;
+			}
+
+			// Campos permitidos a actualizar
+			const {
+				facultyId, careerId, cycleId,
+				subjectId, unitId,
+				topic, description, requestType, status,
+			} = req.body as any;
+
+			const updateData: any = {
+				updated_at: new Date(),
+			};
+
+			if (typeof facultyId   !== 'undefined') updateData.facultyId   = facultyId;
+			if (typeof careerId    !== 'undefined') updateData.careerId    = careerId;
+			if (typeof cycleId     !== 'undefined') updateData.cycleId     = cycleId;
+			if (typeof subjectId   !== 'undefined') updateData.subjectId   = subjectId;
+			if (typeof unitId      !== 'undefined') updateData.unitId      = unitId;
+			if (typeof topic       !== 'undefined') updateData.topic       = topic;
+			if (typeof description !== 'undefined') updateData.description = description;
+			if (typeof requestType !== 'undefined') updateData.requestType = requestType;
+
+			// Permitir que el autor cambie el status solo entre 'open' y 'resolved' si deseas (opcional)
+			if (typeof status !== 'undefined') {
+				if (['open', 'resolved'].includes(status)) {
+					updateData.status = status;
+				}
+			}
+
+			// Archivo opcional
+			if (req.file) {
+				updateData.fileUrl = `uploads/${req.file.filename}`;
+			}
+
+			const updated = await this.helpModel
+			.findByIdAndUpdate(id, updateData, { new: true })
+			.exec();
+
+			res.status(StatusCodes.OK).json({ help: updated });
+		} catch (error) {
+			console.error('Error al actualizar ayuda:', error);
+			res
+			.status(StatusCodes.INTERNAL_SERVER_ERROR)
+			.json({ message: 'Error al actualizar ayuda', error });
+		}
+	}
+
+	// Nuevo: eliminar SOLO si es autor
+	private async deleteMyHelp(req: AuthRequest, res: Response): Promise<void> {
+		try {
+			const { id } = req.params;
+			const userId = req.userId;
+
+			const help = await this.helpModel.findById(id).exec();
+			if (!help) {
+				res.status(StatusCodes.NOT_FOUND).json({ message: 'Ayuda no encontrada' });
+				return;
+			}
+			if (help.user.toString() !== userId) {
+				res.status(StatusCodes.FORBIDDEN).json({ message: 'No tienes permiso para eliminar esta ayuda' });
+				return;
+			}
+
+			await this.helpModel.findByIdAndDelete(id).exec();
+
+			res.status(StatusCodes.OK).json({ message: 'Ayuda eliminada correctamente' });
+		} catch (error) {
+			console.error('Error al eliminar ayuda:', error);
+			res
+			.status(StatusCodes.INTERNAL_SERVER_ERROR)
+			.json({ message: 'Error al eliminar ayuda', error });
+		}
+	}
 }
 

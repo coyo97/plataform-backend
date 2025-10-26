@@ -68,59 +68,29 @@ export class PublicationController {
 			this.listUserPublications.bind(this) // Llama al método que filtra por usuario autenticado
 		);
 		// Ruta para buscar publicaciones
-		this.app.getAppServer().get(
-			`${this.route}/publications/search`,
-			authMiddleware,
-			this.searchPublications.bind(this)
-		);
+		this.app.getAppServer().get( `${this.route}/publications/search`, authMiddleware, this.searchPublications.bind(this));
 		// Ruta para obtener el estado actual del moderador de IA
-		this.app.getAppServer().get(
-			`${this.route}/moderation-status`,
-			authMiddleware,
-			this.getModerationStatus.bind(this)
-		);
+		this.app.getAppServer().get( `${this.route}/moderation-status`, authMiddleware, this.getModerationStatus.bind(this));
 
 		// Ruta para actualizar el estado del moderador de IA
-		this.app.getAppServer().put(
-			`${this.route}/moderation-status`,
-			authMiddleware,
-			this.updateModerationStatus.bind(this)
-		);
+		this.app.getAppServer().put( `${this.route}/moderation-status`, authMiddleware, this.updateModerationStatus.bind(this));
 
 		//esta rutas deben ir mas antes que las rutas genericas: ej. /publications/:id.
 
 		// Ruta para listar publicaciones más gustadas
-		this.app.getAppServer().get(
-			`${this.route}/publications/most-liked`,
-			authMiddleware,
-			this.listMostLikedPublications.bind(this)
-		);
+		this.app.getAppServer().get( `${this.route}/publications/most-liked`, authMiddleware, this.listMostLikedPublications.bind(this));
 
 		// Ruta para listar publicaciones más comentadas
-		this.app.getAppServer().get(
-			`${this.route}/publications/most-commented`,
-			authMiddleware,
-			this.listMostCommentedPublications.bind(this)
-		);
+		this.app.getAppServer().get( `${this.route}/publications/most-commented`, authMiddleware, this.listMostCommentedPublications.bind(this));
 
 		// Ruta para actualizar una publicación existente
-		this.app.getAppServer().put(
-			`${this.route}/publications/:id`,
-			authMiddleware,
-			this.updatePublication.bind(this)
-		);
+		this.app.getAppServer().put( `${this.route}/publications/:id`, authMiddleware, this.updatePublication.bind(this));
 
 		// Ruta para eliminar una publicación
-		this.app.getAppServer().delete(
-			`${this.route}/publications/:id`,
-			authMiddleware,
-			this.deletePublication.bind(this)
-		);
+		this.app.getAppServer().delete( `${this.route}/publications/:id`, authMiddleware, this.deletePublication.bind(this));
 
 		// Ruta para actualizar una publicación existente
-		this.app.getAppServer().put(
-			`${this.route}/user-publications/:id`,
-			authMiddleware,
+		this.app.getAppServer().put( `${this.route}/user-publications/:id`, authMiddleware,
 			async (req, res, next) => {
 				// Obtén el maxUploadSize desde la base de datos
 				const Settings = SettingsModel(this.app.getClientMongoose());
@@ -141,186 +111,209 @@ export class PublicationController {
 			this.updateUserPublication.bind(this)
 		);
 		// Ruta para obtener una publicación por ID
-		this.app.getAppServer().get(
-			`${this.route}/publications/:publicationId`,
-			authMiddleware,
-			this.getPublicationById.bind(this)
-		);
+		this.app.getAppServer().get( `${this.route}/publications/:publicationId`, authMiddleware, this.getPublicationById.bind(this));
 
 		// Ruta para eliminar una publicación
-		this.app.getAppServer().delete(
-			`${this.route}/publications/:id`,
-			authMiddleware,
-			this.deleteUserPublication.bind(this)
-		);
+		this.app.getAppServer().delete( `${this.route}/publications/:id`, authMiddleware, this.deleteUserPublication.bind(this));
 
 
-		this.app.getAppServer().get(
-			`${this.route}/publications/career/:careerId`,
-			authMiddleware,
-			this.listPublicationsByCareer.bind(this)
-		);
+		this.app.getAppServer().get( `${this.route}/publications/career/:careerId`, authMiddleware, this.listPublicationsByCareer.bind(this));
 
 		// Ruta para reportar una publicación
-		this.app.getAppServer().post(
-			`${this.route}/publications/:publicationId/report`,
-			authMiddleware,
-			this.reportPublication.bind(this)
-		);
+		this.app.getAppServer().post( `${this.route}/publications/:publicationId/report`, authMiddleware, this.reportPublication.bind(this));
 
 		// Ruta para dar like a una publicación
-		this.app.getAppServer().post(
-			`${this.route}/publications/:publicationId/like`,
-			authMiddleware,
-			this.likePublication.bind(this)
-		);
+		this.app.getAppServer().post(`${this.route}/publications/:publicationId/like`, authMiddleware, this.likePublication.bind(this));
 
 		// Ruta para quitar el like a una publicación
-		this.app.getAppServer().post(
-			`${this.route}/publications/:publicationId/unlike`,
-			authMiddleware,
-			this.unlikePublication.bind(this)
-		);
+		this.app.getAppServer().post(`${this.route}/publications/:publicationId/unlike`,authMiddleware,this.unlikePublication.bind(this));
 
 
 	}
 
 	// Método para listar todas las publicaciones
-	private async listPublications(req: AuthRequest, res: Response): Promise<void> {
-		try {
-			const userId = req.userId;
+private async listPublications(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.userId;
+    const { tag, tags, careerId, page = 1, limit = 10 } = req.query;
 
-			const User = UserModel(this.app.getClientMongoose());
+    const User = UserModel(this.app.getClientMongoose());
 
-			// Usuarios que han bloqueado al usuario actual
-			const usersWhoBlockedMe = await User.find({ blockedUsers: userId }).select('_id').exec();
-			const blockedByUserIds = usersWhoBlockedMe.map(user => user._id);
+    const normalizeTag = (s: string) =>
+      s
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .trim()
+        .toLowerCase();
 
-			// Usuarios que el usuario actual ha bloqueado
-			const me = await User.findById(userId).select('blockedUsers').exec();
-			const myBlockedUserIds = me ? me.blockedUsers : [];
+    let tagsArray: string[] = [];
+    if (typeof tag === "string") tagsArray.push(normalizeTag(tag));
+    if (typeof tags === "string")
+      tagsArray = tagsArray.concat(
+        tags
+          .split(",")
+          .map((t) => normalizeTag(t))
+          .filter((t) => t.length > 0)
+      );
 
-			// Combinar ambas listas de IDs a excluir
-			const excludedUserIds = blockedByUserIds.concat(myBlockedUserIds);
+    const usersWhoBlockedMe = await User.find({ blockedUsers: userId })
+      .select("_id")
+      .exec();
+    const blockedByUserIds = usersWhoBlockedMe.map((user) => user._id);
 
-			// Excluir publicaciones de usuarios bloqueados y ordenar por fecha de creación
-			const publications = await this.publicationModel.find({
-				author: { $nin: excludedUserIds }
-			})
-			.populate({
-				path: 'author',
-				select: 'username',
-				populate: {
-					path: 'profile',
-					select: 'profilePicture'
-				}
-			})
-			.sort({ createdAt: -1 }) // Ordenar por fecha de creación descendente
-			.exec();
+    const me = await User.findById(userId).select("blockedUsers").exec();
+    const myBlockedUserIds = me ? me.blockedUsers : [];
 
-			res.status(StatusCodes.OK).json({ publications });
-		} catch (error) {
-			console.error('Error al listar las publicaciones:', error);
-			res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al listar las publicaciones', error });
-		}
-	}
+    const excludedUserIds = blockedByUserIds.concat(myBlockedUserIds);
 
+    const filter: Record<string, any> = {
+      author: { $nin: excludedUserIds },
+    };
+
+    // Filtro por tags
+    if (tagsArray.length > 0) {
+      filter.tags = { $in: tagsArray };
+    }
+
+    // Filtro por carrera (opcional)
+    if (careerId && typeof careerId === "string") {
+      filter.career = careerId;
+    }
+
+    const pageNum = Number(page) > 0 ? Number(page) : 1;
+    const limitNum = Number(limit) > 0 ? Number(limit) : 10;
+    const skip = (pageNum - 1) * limitNum;
+
+    const publications = await this.publicationModel
+      .find(filter)
+      .populate({
+        path: "author",
+        select: "username",
+        populate: {
+          path: "profile",
+          select: "profilePicture",
+        },
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .exec();
+
+    // Total para paginación (solo si se usa page/limit)
+    const total = await this.publicationModel.countDocuments(filter).exec();
+
+    res.status(StatusCodes.OK).json({
+      publications,
+      pagination: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum),
+      },
+    });
+  } catch (error) {
+    console.error("Error al listar las publicaciones:", error);
+    res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json({ message: "Error al listar las publicaciones", error });
+  }
+}
 
 	// Método para crear una nueva publicación
-	private async createPublication(req: AuthRequest, res: Response): Promise<Response> {
-		try {
-			const { title, content, tags, careerId } = req.body;
-			const userId = req.userId;
-			const file = req.file;
+private async createPublication(req: AuthRequest, res: Response): Promise<Response> {
+  try {
+    const { title, content, tags, careerId } = req.body;
+    const userId = req.userId;
+    const file = req.file;
 
-			if (!userId) {
-				return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no autenticado' });
-			}
+    if (!userId) {
+      return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no autenticado' });
+    }
 
-			if (!title || !content) {
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El título y contenido son obligatorios' });
-			}
+    if (!title || !content) {
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El título y contenido son obligatorios' });
+    }
 
-			// Verificar que la carrera seleccionada pertenece al usuario
-			const user = await UserModel(this.app.getClientMongoose()).findById(userId).exec();
-			if (!user) {
-				return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no encontrado' });
-			}
+    // Obtener usuario y sus carreras
+    const user = await UserModel(this.app.getClientMongoose()).findById(userId).exec();
+    if (!user) {
+      return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no encontrado' });
+    }
 
-			// Verificar el estado del moderador de IA
-			const Settings = SettingsModel(this.app.getClientMongoose());
-			const settings = await Settings.findOne().exec();
-			const aiModerationEnabled = settings?.aiModerationEnabled ?? true; // Asume 'true' si no se encuentra configuración
+    const careers = Array.isArray(user.careers) ? user.careers : [];
 
-			if (file && aiModerationEnabled) {
-				// Verificar si el archivo es una imagen
-				if (file.mimetype.startsWith('image/')) {
-					try {
-						const isNSFW = await analyzeImage(file.path);
-						if (isNSFW) {
-							// Eliminar el archivo si es inapropiado (opcional)
-							// fs.unlinkSync(file.path);
-							return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Contenido inapropiado detectado en la imagen' });
-						}
-					} catch (error) {
-						console.error('Error analizando la imagen:', error);
-						return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al analizar la imagen' });
-					}
-				}
-				if (file.mimetype.startsWith("video/")) {
-					const isNSFW = await analyzeVideo(file.path);
-					if (isNSFW) {
-						return res
-						.status(StatusCodes.BAD_REQUEST)
-						.json({ message: "Contenido inapropiado detectado en el video" });
-					}
-				}
-			}
+    let careerToUse: mongoose.Types.ObjectId | null = null;
+    let audience: 'guest' | 'university' = 'guest';
 
-			// Asegurarse de que careers es un array de ObjectId
-			const careers = user.careers as mongoose.Types.ObjectId[];
+    if (careers.length === 0) {
+      audience = 'guest';
+    }
+    else if (careers.length === 1) {
+      audience = 'university';
+      careerToUse = careers[0];
+    }
+    else if (careerId) {
+      if (careers.some((id) => id.toString() === careerId)) {
+        audience = 'university';
+        careerToUse = careerId;
+      } else {
+        return res.status(StatusCodes.BAD_REQUEST).json({
+          message: 'La carrera seleccionada no pertenece al usuario',
+        });
+      }
+    } else {
+      return res.status(StatusCodes.BAD_REQUEST).json({
+        message: 'Debes seleccionar la carrera para esta publicación',
+      });
+    }
 
-			let careerToUse;
-			if (careerId) {
-				// Verificar que el usuario tiene esta carrera
-				if (Array.isArray(careers) && careers.some((id) => id.toString() === careerId)) {
-					careerToUse = careerId;
-				} else {
-					return res.status(StatusCodes.BAD_REQUEST).json({ message: 'La carrera seleccionada no pertenece al usuario' });
-				}
-			} else {
-				// Si no se proporciona una carrera, usar la primera del usuario
-				if (careers.length > 0) {
-					careerToUse = careers[0];
-				} else {
-					return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El usuario no tiene carreras asociadas' });
-				}
-			}
-			const urlBase = process.env.PUBLIC_URL || 'https://tu-dominio.com';
-			const fileUrl = file ? `${urlBase}/${file.path}` : undefined;
-			const newPublication = new this.publicationModel({
-				title,
-				content,
-				author: userId,
-				tags: JSON.parse(tags),
-				filePath: file?.path,
-				fileType: file?.mimetype,
-				career: careerToUse,
-				fileUrl,
-			});
-			const result = await newPublication.save();
-			await result.populate({
-				path: 'author',
-				select: 'username',
-				populate: { path: 'profile', select: 'profilePicture' }
-			});
+    const Settings = SettingsModel(this.app.getClientMongoose());
+    const settings = await Settings.findOne().exec();
+    const aiModerationEnabled = settings?.aiModerationEnabled ?? true;
 
-			return res.status(StatusCodes.CREATED).json({ publication: result });
-		} catch (error) {
-			console.error('Error al crear la publicación:', error);
-			return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Error al crear la publicación', error });
-		}
-	}
+    if (file && aiModerationEnabled) {
+      if (file.mimetype.startsWith('image/')) {
+        const isNSFW = await analyzeImage(file.path);
+        if (isNSFW) {
+          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Contenido inapropiado detectado en la imagen' });
+        }
+      }
+      if (file.mimetype.startsWith("video/")) {
+        const isNSFW = await analyzeVideo(file.path);
+        if (isNSFW) {
+          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Contenido inapropiado detectado en el video' });
+        }
+      }
+    }
+
+    const urlBase = process.env.PUBLIC_URL || 'https://tu-dominio.com';
+    const fileUrl = file ? `${urlBase}/${file.path}` : undefined;
+
+    const newPublication = new this.publicationModel({
+      title,
+      content,
+      author: userId,
+      tags: JSON.parse(tags),
+      filePath: file?.path,
+      fileType: file?.mimetype,
+      career: careerToUse,      // null si es invitado
+      audience,                 // 'guest' o 'university'
+      fileUrl,
+    });
+
+    const result = await newPublication.save();
+    await result.populate({
+      path: 'author',
+      select: 'username',
+      populate: { path: 'profile', select: 'profilePicture' }
+    });
+
+    return res.status(StatusCodes.CREATED).json({ publication: result });
+  } catch (error) {
+    console.error('Error al crear la publicación:', error);
+    return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Error al crear la publicación', error });
+  }
+}
 
 
 	private async updatePublication(req: Request, res: Response): Promise<void> {
@@ -523,7 +516,8 @@ export class PublicationController {
 			const Report = ReportModel(this.app.getClientMongoose());
 			const newReport = new Report({
 				reporter: userId,
-				publication: publicationId,
+				target: publicationId,     
+				targetType: 'Publication',
 				reason,
 				status: 'pending',
 			});
@@ -669,36 +663,85 @@ export class PublicationController {
 		}
 	}
 
-	private async searchPublications(req: Request, res: Response): Promise<Response> {
-		try {
-			const { query } = req.query; // Obtenemos el parámetro 'query' de la solicitud
+private async searchPublications(req: Request, res: Response): Promise<Response> {
+  try {
+    const { query, tag, tags, careerId, page = 1, limit = 10 } = req.query;
 
-			if (!query || typeof query !== 'string') {
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El parámetro de búsqueda es obligatorio' });
-			}
+    const normalizeTag = (s: string) =>
+      s
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .trim()
+        .toLowerCase();
 
-			// Realizar la búsqueda utilizando el índice de texto
-			const publications = await this.publicationModel.find(
-				{ $text: { $search: query } },
-				{ score: { $meta: 'textScore' } }
-			)
-			.sort({ score: { $meta: 'textScore' } })
-			.populate({
-				path: 'author',
-				select: 'username',
-				populate: {
-					path: 'profile',
-					select: 'profilePicture'
-				}
-			})
-			.exec();
+    let tagsArray: string[] = [];
+    if (typeof tag === "string") tagsArray.push(normalizeTag(tag));
+    if (typeof tags === "string")
+      tagsArray = tagsArray.concat(
+        tags
+          .split(",")
+          .map((t) => normalizeTag(t))
+          .filter((t) => t.length > 0)
+      );
 
-			return res.status(StatusCodes.OK).json({ publications });
-		} catch (error) {
-			console.error('Error al buscar publicaciones:', error);
-			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al buscar publicaciones', error });
-		}
-	}
+    // Base de filtro
+    const filter: Record<string, any> = {};
+
+    if (query && typeof query === "string" && query.trim() !== "") {
+      filter.$text = { $search: query.trim() };
+    }
+
+    if (tagsArray.length > 0) {
+      // Si hay búsqueda y tags, combinamos con $and
+      if (filter.$text) {
+        filter.$and = [{ tags: { $in: tagsArray } }];
+      } else {
+        filter.tags = { $in: tagsArray };
+      }
+    }
+
+    if (careerId && typeof careerId === "string") {
+      filter.career = careerId;
+    }
+
+    const pageNum = Number(page) > 0 ? Number(page) : 1;
+    const limitNum = Number(limit) > 0 ? Number(limit) : 10;
+    const skip = (pageNum - 1) * limitNum;
+
+    const publications = await this.publicationModel
+      .find(filter, filter.$text ? { score: { $meta: "textScore" } } : {})
+      .sort(filter.$text ? { score: { $meta: "textScore" } } : { createdAt: -1 })
+      .populate({
+        path: "author",
+        select: "username",
+        populate: {
+          path: "profile",
+          select: "profilePicture",
+        },
+      })
+      .skip(skip)
+      .limit(limitNum)
+      .exec();
+
+    const total = await this.publicationModel.countDocuments(filter).exec();
+
+    return res.status(StatusCodes.OK).json({
+      publications,
+      pagination: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum),
+      },
+    });
+  } catch (error) {
+    console.error("Error al buscar publicaciones:", error);
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json({ message: "Error al buscar publicaciones", error });
+  }
+}
+
 	private async listMostLikedPublications(req: AuthRequest, res: Response): Promise<void> {
 		try {
 			const userId = req.userId;

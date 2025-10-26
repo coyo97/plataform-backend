@@ -15,6 +15,15 @@ export interface IUser extends Document {
 	apellidoPaterno?: string;
 	apellidoMaterno?: string;
 
+	// podemos controlar tipo 
+	accountType?: "guest" | "university";   // si no envían, default "guest"
+	schoolName?: string;                    // opcional (colegio/organización)
+	universityVerification?: {
+		method?: "email-domain" | "code" | null;
+		verified?: boolean;
+		at?: Date;
+	};
+
 	//para rastrear
 	reportCount: number;
 	uniqueReporters: Types.ObjectId[];
@@ -35,6 +44,21 @@ const userSchema: Schema<IUser> = new Schema({
 
 	apellidoPaterno: { type: String, required: false },
 	apellidoMaterno: { type: String, required: false },
+
+	// con defaults inofensivos
+	accountType: {
+		type: String,
+		enum: ['guest', 'university'],
+		default: 'guest',
+		index: true
+	},
+	schoolName: { type: String, default: "" },
+	universityVerification: {
+		method:   { type: String, enum: ['email-domain', 'code', null], default: null },
+		verified: { type: Boolean, default: false },
+		at:       { type: Date }
+	},
+
 
 	//para rastrear usuario y contar sus reportes
 	reportCount: { type: Number, default: 0 },
