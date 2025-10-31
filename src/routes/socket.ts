@@ -287,114 +287,175 @@ export class SocketController {
 		if (!userId) return;
 
 		// Unirse a la sala de stream
-		socket.on('join-stream', async (data) => {
-			console.log('Datos recibidos en join-stream:', data);
-						const { streamId, accessCode } = data;
-						const userId = socket.data.userId;
-						console.log('[SOCKET] join-stream', { streamId, userId });
-						console.log('   streamViewers antes:', this.streamViewers.get(streamId));
+socket.on('join-stream', async (data) => {
+  console.log('Datos recibidos en join-stream:', data);
+  const { streamId, accessCode } = data;
+  const userId = socket.data.userId;
+  console.log('[SOCKET] join-stream', { streamId, userId });
+  console.log('[[STREAM]] join-stream: socket.id=%s userId=%s data=%o', socket.id, userId, data);
 
-									if (!userId) {
-										socket.emit('stream-error', { message: 'Usuario no autenticado' });
-										return;
-									}
-									/* ───── 1.  ¿está vetado?  ───────────────────────────── */
-									if (this.bannedViewers.get(streamId)?.has(userId)) {
-										socket.emit('stream-error',
-													{ message: 'Has sido expulsado de este stream' });
-													return;                                // ⬅️  no seguimos
-									}
-									try {
-										const stream = await this.streamModel.findById(streamId);
-										if (!stream || !stream.active) {
-											socket.emit('stream-error', { message: 'El stream no está disponible' });
-											return;
-										}
+  if (!userId) {
+    socket.emit('stream-error', { message: 'Usuario no autenticado' });
+    return;
+  }
 
-										let canJoin = false;
-										const banned = this.bannedViewers.get(streamId);
-										if (banned?.has(userId)) {
-											socket.emit('stream-error', { message: 'Has sido expulsado de este stream.' });
-											return;
-										}
-										if (stream.visibility === 'university') {
-											canJoin = true;
-										} else if (stream.visibility === 'career') {
-											// Verificar si el usuario pertenece a las carreras permitidas
-											const user = await this.userModel.findById(userId).populate('careers').exec();
+  // 1) veto
+  if (this.bannedViewers.get(streamId)?.has(userId)) {
+    socket.emit('stream-error', { message: 'Has sido expulsado de este stream' });
+    return;
+  }
 
-											if (!user) {
-												socket.emit('stream-error', { message: 'Usuario no encontrado' });
-												return;
-											}
+  try {
+    const stream = await this.streamModel.findById(streamId);
+    console.log(
+      '[[STREAM]] stream %s active=%s visibility=%s owner=%s',
+      streamId, !!stream?.active, stream?.visibility, stream?.userId?.toString()
+    );
 
-											// En este punto, user.careers sigue tipado como ICareer['_id'][] (ObjectId[]),
-											// pero realmente contiene ICareer[] gracias a populate.
-											// Hacemos una aserción de tipo para tratar user.careers como ICareer[]:
-											const userCareerIds = (user.careers as unknown as ICareer[]).map((career: ICareer) => career._id.toString());
+    if (!stream || !stream.active) {
+      socket.emit('stream-error', { message: 'El stream no está disponible' });
+      return;
+    }
 
-											if (!stream.careerIds || stream.careerIds.length === 0) {
-												socket.emit('stream-error', { message: 'El stream no tiene carreras asociadas' });
-												return;
-											}
+    // 2) autorizaciones
+    let canJoin = false;
 
-											const streamCareerIds = stream.careerIds.map((id) => id.toString());
+    if (stream.visibility === 'university') {
+      canJoin = true;
+    } else if (stream.visibility === 'career') {
+      const user = await this.userModel.findById(userId).populate('careers').exec();
+      if (!user) {
+        socket.emit('stream-error', { message: 'Usuario no encontrado' });
+        return;
+      }
+      const userCareerIds = (user.careers as any[]).map(c => c._id.toString());
+      const streamCareerIds = (stream.careerIds ?? []).map((id: any) => id.toString());
+      if (streamCareerIds.length === 0) {
+        socket.emit('stream-error', { message: 'El stream no tiene carreras asociadas' });
+        return;
+      }
+      canJoin = userCareerIds.some(id => streamCareerIds.includes(id));
+    } else if (stream.visibility === 'private') {
+      if (userId === stream.userId.toString()) canJoin = true;
+      else if (accessCode === stream.accessCode) canJoin = true;
+      else {
+        socket.emit('stream-error', { message: 'Código de acceso incorrecto' });
+        return;
+      }
+    }
 
-											// Verificar si hay intersección entre las carreras del usuario y las del stream
-											canJoin = userCareerIds.some((careerId) => streamCareerIds.includes(careerId));
+    if (!canJoin) {
+      socket.emit('stream-error', { message: 'No tienes permiso para unirte a este stream' });
+      return;
+    }
 
-										} else if (stream.visibility === 'private') {
-											if (userId === stream.userId.toString()) {
-												// El usuario es el propietario del stream
-												canJoin = true;
-											} else if (accessCode === stream.accessCode) {
-												canJoin = true;
-											} else {
-												socket.emit('stream-error', { message: 'Código de acceso incorrecto' });
-												return;
-											}
-										}
+    // 3) unir a sala (evita doble join)
+    if (!socket.rooms.has(streamId)) {
+      console.log('[[ROOM]] socket.join(%s) by user=%s', streamId, userId);
+      socket.join(streamId);
+    }
+    console.log(`Usuario ${userId} se unió al stream ${streamId}`);
 
-										if (canJoin) {
-											socket.join(streamId);
-											console.log(`Usuario ${userId} se unió al stream ${streamId}`);
-											const ownerId = stream.userId.toString();          // <— usa SIEMPRE string
-											const ownerSocketId = this.connectedUsers.get(ownerId);
-											console.log('[BACK] ownerSocketId =', ownerSocketId);
-											if (ownerSocketId) {
-												console.log('[BACK] emitir request-screen-share a', ownerSocketId);
-												// antes de emitir request-screen-share
-												console.log('[BACK] stream.userId', stream.userId.toString());
-												console.log('[BACK] map has key ?', this.connectedUsers.has(stream.userId.toString()));
-												console.log('[BACK] connectedUsers keys', Array.from(this.connectedUsers.keys()));
-												this.io.to(ownerSocketId).emit('request-screen-share', {
-													viewerSocketId: socket.id,           // a quién va dirigido
-													streamId
-												});
-												this.io.to(ownerSocketId).emit('request-offer', {
-													viewerSocketId: socket.id,
-													streamId
-												});
-											}
-											// Agregar a la lista de espectadores
-											if (!this.streamViewers.has(streamId)) {
-												this.streamViewers.set(streamId, new Set());
-											}
-											this.streamViewers.get(streamId)!.add(userId);
-											// Notificar al streamer que la lista de espectadores ha cambiado
-											await this.updateStreamerViewersList(streamId);
-										} else {
-											socket.emit('stream-error', { message: 'No tienes permiso para unirte a este stream' });
-										}
-									} catch (error) {
-										console.error('Error al unirse al stream:', error);
-										socket.emit('stream-error', { message: 'Error al unirse al stream' });
-									}
-		});
+    // 4) snapshot de estado al recién llegado (SOLO una vez)
+    const isSharingScreen = this.activeScreenStreams?.has(streamId) ?? false;
+    const streamerMuted = this.mutedStreamers?.has(streamId) ?? false;
+    this.io.to(socket.id).emit('current-stream-state', {
+      isSharingScreen,
+      isStreamerMuted: streamerMuted,
+      viewersCount: this.streamViewers.get(streamId)?.size ?? 0,
+    });
+    console.log(
+      '[[STATE]] current-stream-state emitido a %s: { isSharingScreen=%s, muted=%s }',
+      socket.id, isSharingScreen, streamerMuted
+    );
+
+    // 5) owner actual
+    const ownerId = stream.userId.toString();
+    const ownerSocketId = this.connectedUsers.get(ownerId);
+    const isOwnerSelf = ownerId === userId && ownerSocketId === socket.id;
+    console.log('[BACK] ownerSocketId =', ownerSocketId, 'isOwnerSelf=', isOwnerSelf);
+
+    // 6) enviar stream-owner AL QUE ENTRA (una sola vez)
+    this.io.to(socket.id).emit('stream-owner', { ownerSocketId });
+    console.log('[[STATE]] stream-owner → %s ownerSocketId=%s', socket.id, ownerSocketId);
+
+    // 7) preparar set de viewers y agregar (no agregues al dueño)
+    if (!this.streamViewers.has(streamId)) {
+      this.streamViewers.set(streamId, new Set());
+    }
+    if (!isOwnerSelf) {
+      this.streamViewers.get(streamId)!.add(userId);
+      console.log(
+        '[[VIEWERS]] add user=%s to stream=%s size=%d',
+        userId, streamId, this.streamViewers.get(streamId)!.size
+      );
+    } else {
+      console.log('[[VIEWERS]] owner no se agrega al set de viewers');
+    }
+
+    // 8) notificar al owner del late-join SOLO si no es el mismo socket
+    if (ownerSocketId && ownerSocketId !== socket.id) {
+      console.log(
+        '[[SIG]] late-join notify owner: ownerId=%s ownerSocketId=%s viewerSocketId=%s',
+        ownerId, ownerSocketId, socket.id
+      );
+      this.io.to(ownerSocketId).emit('request-screen-share', {
+        viewerSocketId: socket.id,
+        streamId,
+      });
+      this.io.to(ownerSocketId).emit('request-offer', {
+        viewerSocketId: socket.id,
+        streamId,
+      });
+    } else if (ownerSocketId === socket.id) {
+      console.log('[[STATE]] owner joined; skip late-join notifies to self');
+    }
+
+    // 9) actualizar lista al streamer (una sola vez)
+    await this.updateStreamerViewersList(streamId);
+
+  } catch (error) {
+    console.error('Error al unirse al stream:', error);
+    socket.emit('stream-error', { message: 'Error al unirse al stream' });
+    console.error('[[ERR]] join-stream failed: streamId=%s userId=%s err=%o', streamId, userId, error);
+  }
+});
+
+
+		// Permite que un viewer tarde pida pantalla aunque el streamer ya esté compartiendo.
+socket.on('request-screen-share', async ({ streamId, viewerSocketId }: { streamId: string; viewerSocketId?: string }) => {
+  try {
+    const stream = await this.streamModel.findById(streamId);
+    if (!stream) return;
+
+    const ownerId = stream.userId.toString();
+    const ownerSocketId = this.connectedUsers.get(ownerId);
+
+    // si no viene viewerSocketId, usamos el socket emisor
+    const requester = viewerSocketId || socket.id;
+
+    // ① SIEMPRE informar al requester quién es el owner (puede ser undefined)
+    this.io.to(requester).emit('stream-owner', { ownerSocketId });
+
+    // ② Si el owner está online y NO es el mismo socket, notifícale el late-join
+    if (ownerSocketId && ownerSocketId !== requester) {
+      this.io.to(ownerSocketId).emit('request-screen-share', { viewerSocketId: requester, streamId });
+      this.io.to(ownerSocketId).emit('request-offer',       { viewerSocketId: requester, streamId });
+    }
+
+    console.log('[[SIG]] request-screen-share relay -> ownerId=%s ownerSocketId=%s requester=%s',
+      ownerId, ownerSocketId, requester);
+  } catch (err) {
+    console.error('[SOCKET] request-screen-share relay error:', err);
+    socket.emit('stream-error', { message: 'Error al solicitar pantalla' });
+  }
+});
+	
+
 		/* ════════════════ CHAT EN VIVO DEL STREAM ════════════════ */
 		socket.on('stream-chat-message', async ({ streamId, toUserId, content }) => {
 			const senderId = socket.data.userId;
-			if (!senderId || !content) return;           // ✔️  solo estos son obligatorios
+			if (!senderId || !content) return;
 
 			const user = await this.userModel
 			.findById(senderId)
@@ -407,7 +468,7 @@ export class SocketController {
 				profilePicture: (user as any)?.profile?.profilePicture,
 				content,
 				timestamp: Date.now(),
-				toUserId,                                   // puede venir undefined
+				toUserId,
 			};
 
 			if (toUserId) {
@@ -421,88 +482,151 @@ export class SocketController {
 		});
 
 		/* ───────── backend: ruteo genérico ───────── */
-		socket.on('offer', ({ streamId, to, offer }) => {
-			to ? socket.to(to).emit('offer',  { offer, from: socket.id })
-				: socket.to(streamId).emit('offer', { offer, from: socket.id });
-		});
-		socket.on('answer', ({ streamId, to, answer }) => {
-			if (to) socket.to(to).emit('answer', { answer });
-		});
-
-		/*socket.on('ice-candidate', ({ streamId, to, candidate }) => {
-			if (to) socket.to(to).emit('ice-candidate', { candidate });
-		});*/
-socket.on('ice-candidate', ({ streamId, to, candidate }) => {
-  if (to) {
-    this.io.to(to).emit('ice-candidate', {
-      from: socket.id,      // 👈 identifica al emisor
-      candidate,
-    });
-  } else {
-    // Difusión dentro de la sala (por si la usas en otras ramas)
-    socket.to(streamId).emit('ice-candidate', {
-      from: socket.id,
-      candidate,
-    });
+// OFFER
+// OFFER — SIEMPRE dirigido
+socket.on('offer', ({ streamId, to, offer }) => {
+  if (!to) {
+    console.warn('[[GUARD]] offer sin `to`, se descarta', { from: socket.id, streamId });
+    socket.emit('sig-error', { type: 'offer', reason: 'missing-to', streamId });
+    return;
   }
+  if (to === socket.id) {
+    console.warn('[[GUARD]] ignoring self-offer to same socket', { streamId, to });
+    return;
+  }
+
+  console.log('[[SIG]] offer: from=%s to=%s streamId=%s', socket.id, to, streamId);
+  // Relay dirigido (no usar broadcast a la sala)
+  socket.to(to).emit('offer', { from: socket.id, offer, streamId });
+});
+
+// ANSWER — SIEMPRE dirigido
+socket.on('answer', ({ streamId, to, answer }) => {
+  if (!to) {
+    console.warn('[[GUARD]] answer sin `to`, se descarta', { from: socket.id, streamId });
+    socket.emit('sig-error', { type: 'answer', reason: 'missing-to', streamId });
+    return;
+  }
+  if (to === socket.id) {
+    console.warn('[[GUARD]] ignoring self-answer to same socket', { streamId, to });
+    return;
+  }
+
+  console.log('[[SIG]] answer: from=%s to=%s streamId=%s', socket.id, to, streamId);
+  socket.to(to).emit('answer', { from: socket.id, answer, streamId });
+});
+
+// ICE — SIEMPRE dirigido
+socket.on('ice-candidate', ({ streamId, to, candidate }) => {
+  if (!to) {
+    console.warn('[[GUARD]] ice sin `to`, se descarta', { from: socket.id, streamId });
+    socket.emit('sig-error', { type: 'ice', reason: 'missing-to', streamId });
+    return;
+  }
+  if (to === socket.id) {
+    console.warn('[[GUARD]] ignoring self-ice to same socket', { streamId, to });
+    return;
+  }
+
+  const hasCandidate = !!candidate;
+  console.log('[[ICE]] candidate: from=%s to=%s streamId=%s hasCandidate=%s',
+              socket.id, to, streamId, hasCandidate);
+
+  socket.to(to).emit('ice-candidate', { from: socket.id, candidate, streamId });
 });
 
 
-		socket.on('screen-share-offer', ({ streamId, offer, to }) => {
-			if (to) {
-				// ① oferta dirigida (re-offer)
-				socket.to(to).emit('screen-share-offer', { offer });
-			} else {
-				// ② oferta inicial (broadcast)
-				socket.to(streamId).emit('screen-share-offer', { offer });
-			}
-		});
+// SCREEN-SHARE OFFER
+// SCREEN-SHARE OFFER (reemplaza tu handler actual)
+// SCREEN-SHARE OFFER: admite target directo (to) o broadcast (sin to)
+// SCREEN-SHARE OFFER (propaga `origin`)
+socket.on('screen-share-offer', ({ streamId, offer, to, origin }) => {
+  if (to && to === socket.id) {
+    console.warn('[[GUARD]] self-target in screen-share-offer', { streamId, to });
+    return;
+  }
 
-		socket.on('screen-share-answer', d => {
-			const { streamId, answer } = d;
-			socket.to(streamId).emit('screen-share-answer', { answer });
-		});
-		socket.on('screen-share-ice',   d => {
-			const { streamId, candidate } = d;
-			socket.to(streamId).emit('screen-share-ice',    { candidate });
-		});
+  if (to) {
+    // Target directo (recomendado para SFU ligero)
+    console.log(
+      '[[SIG]] screen-share-offer (target): from=%s to=%s origin=%s streamId=%s',
+      socket.id, to, origin ?? '(none)', streamId
+    );
+    socket.to(to).emit('screen-share-offer', { offer, from: socket.id, origin });
+  } else {
+    // Broadcast a la sala (menos recomendado)
+    console.log(
+      '[[SIG]] screen-share-offer (broadcast): from=%s origin=%s streamId=%s',
+      socket.id, origin ?? '(none)', streamId
+    );
+    socket.to(streamId).emit('screen-share-offer', { offer, from: socket.id, origin });
+  }
+});
+
+// SCREEN-SHARE ANSWER: siempre dirigido (propaga `origin` para simetría/depuración)
+socket.on('screen-share-answer', ({ streamId, to, answer, origin }) => {
+  if (!to || to === socket.id) {
+    console.warn('[[GUARD]] invalid screen-share-answer target', { streamId, to });
+    socket.emit('screen-share-error', { streamId, message: 'missing or invalid "to" in screen-share-answer' });
+    return;
+  }
+  console.log(
+    '[[SIG]] screen-share-answer: from=%s to=%s origin=%s streamId=%s',
+    socket.id, to, origin ?? '(none)', streamId
+  );
+  socket.to(to).emit('screen-share-answer', { answer, from: socket.id, origin });
+});
+
+// SCREEN-SHARE ICE: siempre dirigido (propaga `origin`)
+socket.on('screen-share-ice', ({ streamId, to, candidate, origin }) => {
+  if (!to || to === socket.id) {
+    console.warn('[[GUARD]] invalid screen-share-ice target', { streamId, to });
+    socket.emit('screen-share-error', { streamId, message: 'missing or invalid "to" in screen-share-ice' });
+    return;
+  }
+  console.log(
+    '[[ICE]] screen-share-ice: from=%s to=%s origin=%s streamId=%s hasCandidate=%s',
+    socket.id, to, origin ?? '(none)', streamId, !!candidate
+  );
+  socket.to(to).emit('screen-share-ice', { candidate, from: socket.id, origin });
+});
+
 
 		/* ④ Fin de pantalla ------------------------------ */
-		socket.on('stop-screen-share',  d => {
-			const { streamId } = d;
-			socket.to(streamId).emit('stop-screen-share');        // sin payload
-		});
+		socket.on('stop-screen-share', ({ streamId }) => {
+			socket.to(streamId).emit('stop-screen-share'); // sin payload
+			console.log('[[SCREEN]] stop-screen-share broadcast streamId=%s by=%s', streamId, socket.id);
 
+		});
 
 		// Evento para expulsar a un espectador
 		socket.on('kick-viewer', async ({ streamId, viewerId }) => {
+			console.log('[[ADMIN]] kick-viewer: by=%s streamId=%s targetUser=%s', userId, streamId, viewerId);
 			const stream = await this.streamModel.findById(streamId);
 			if (!stream || stream.userId.toString() !== userId) {
 				socket.emit('action-error', { message: 'No tienes permiso' });
 				return;
 			}
 
-			/* ①  añadir a la lista negra */
+			// ① añadir a la lista negra
 			this.banViewer(streamId, viewerId);
 
-			/* ②  notificar al expulsado y cerrar su socket */
+			// ② notificar al expulsado y cerrar su socket
 			const viewerSocketId = this.connectedUsers.get(viewerId);
 			if (viewerSocketId) {
-				this.io.to(viewerSocketId).emit('kicked',
-												{ message: 'Has sido expulsado del stream.' });
-												this.io.sockets.sockets.get(viewerSocketId)?.leave(streamId);
+				this.io.to(viewerSocketId).emit('kicked', { message: 'Has sido expulsado del stream.' });
+				this.io.sockets.sockets.get(viewerSocketId)?.leave(streamId);
 			}
 
-			/* ③  actualizar estructuras y avisar al streamer */
+			// ③ actualizar estructuras y avisar al streamer
 			this.streamViewers.get(streamId)?.delete(viewerId);
 			await this.updateStreamerViewersList(streamId);
 
-			/* ④  limpiar mapa si ya no quedan */
+			// ④ limpiar mapa si ya no quedan
 			if (this.streamViewers.get(streamId)?.size === 0) {
 				this.streamViewers.delete(streamId);
 			}
-			if (!this.bannedViewers.has(streamId))
-				this.bannedViewers.set(streamId, new Set());
+			if (!this.bannedViewers.has(streamId)) this.bannedViewers.set(streamId, new Set());
 			this.bannedViewers.get(streamId)!.add(viewerId);
 		});
 
@@ -521,6 +645,9 @@ socket.on('ice-candidate', ({ streamId, to, candidate }) => {
 
 			// Notificar al streamer que la lista de espectadores ha cambiado
 			await this.updateStreamerViewersList(streamId);
+			console.log('[[STREAM]] leave-stream: user=%s streamId=%s', userId, streamId);
+console.log('[[ROOM]] socket.leave(%s) by user=%s', streamId, userId);
+
 		});
 
 		socket.on('disconnect', () => {
@@ -533,8 +660,11 @@ socket.on('ice-candidate', ({ streamId, to, candidate }) => {
 					this.updateStreamerViewersList(streamId);
 				}
 			});
+			console.log('[[SOCKET]] disconnect: user=%s socket.id=%s', userId, socket.id);
+
 		});
 	}
+
 
 	// Función para actualizar la lista de espectadores y enviarla al streamer
 	private async updateStreamerViewersList(streamId: string) {
@@ -614,6 +744,8 @@ socket.on('ice-candidate', ({ streamId, to, candidate }) => {
 			this.bannedViewers.set(streamId, new Set());
 		this.bannedViewers.get(streamId)!.add(userId);
 	}
+private activeScreenStreams: Set<string> = new Set(); // streamIds con pantalla activa
+private mutedStreamers: Set<string> = new Set();      // streamIds cuyo streamer está silenciado
 
 }
 

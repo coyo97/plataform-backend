@@ -64,7 +64,7 @@ const getUserPermissions = (user: any): Set<string> => {
   const permissions = new Set<string>();
   if (user.roles && Array.isArray(user.roles)) {
     user.roles.forEach((role: any) => {
-      console.log(`Rol del usuario: ${role.name}`);
+      //console.log(`Rol del usuario: ${role.name}`);
       if (role.permissions && Array.isArray(role.permissions)) {
         role.permissions.forEach((permission: any) => {
           if (permission.module && permission.action) {
@@ -72,10 +72,10 @@ const getUserPermissions = (user: any): Set<string> => {
             const actionName = permission.action.name;
             const permissionString = `${moduleName}:${actionName}`;
             permissions.add(permissionString);
-            console.log(`Permiso agregado: ${permissionString}`);
+           // console.log(`Permiso agregado: ${permissionString}`);
           } else {
-            console.warn('Permiso incompleto: falta módulo o acción.');
-            console.warn('Detalles del permiso incompleto:', permission);
+            //console.warn('Permiso incompleto: falta módulo o acción.');
+            //console.warn('Detalles del permiso incompleto:', permission);
           }
         });
       } else {
@@ -85,7 +85,7 @@ const getUserPermissions = (user: any): Set<string> => {
   } else {
     console.warn('El usuario no tiene roles asignados o roles no es un arreglo.');
   }
-  console.log('Permisos del usuario:', Array.from(permissions));
+  //console.log('Permisos del usuario:', Array.from(permissions));
   return permissions;
 };
 
