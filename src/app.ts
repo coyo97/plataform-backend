@@ -33,6 +33,7 @@ import { SubjectController } from './routes/subject';
 import { UnitController    } from './routes/unit';
 import { ResourceController } from './routes/resource';
 import {AccessPoliciesController} from './routes/accessPolicies';
+import {MeController} from './routes/me';
 
 if (process.env.NODE_ENV !== 'production') {
 	dotenv.config();
@@ -114,6 +115,7 @@ export default class App {
 		new UnitController   (this, `/${this.apiVersion}/${this.apiPrefix}`);
 		new ResourceController(this, `/${this.apiVersion}/${this.apiPrefix}`);
 		new AccessPoliciesController(this, `/${this.apiVersion}/${this.apiPrefix}`);
+		new MeController(this,`/${this.apiVersion}/${this.apiPrefix}`)
 
 	}
 

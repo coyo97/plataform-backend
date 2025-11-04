@@ -9,6 +9,8 @@ import { getUploadMiddleware } from '../middlware/upload';
 import { SettingsModel } from './schemas/settings';
 import SocketController from './socket';
 import { Types, PipelineStage } from 'mongoose';
+import { UserModel } from './schemas/user';
+
 
 interface AuthRequest extends Request {
 	userId?: string;
@@ -30,29 +32,15 @@ export class MessageController {
 	}
 	// Inicializa las rutas HTTP
 	private initRoutes(): void {
-		this.app.getAppServer().post(
-			`${this.route}/messages/send`,
-			authMiddleware,
-			this.sendMessage.bind(this)
-		);
+		this.app.getAppServer().post( `${this.route}/messages/send`, authMiddleware, this.sendMessage.bind(this));
 
-		this.app.getAppServer().get(
-			`${this.route}/messages/user/:userId`,
-			authMiddleware,
-			this.getMessages.bind(this)
-		);
+this.app.getAppServer().get( `${this.route}/messages/conversations`, authMiddleware, this.getConversations.bind(this));
 
-		this.app.getAppServer().get(
-			`${this.route}/messages/group/:groupId`,
-			authMiddleware,
-			this.getGroupMessages.bind(this)
-		);
+		this.app.getAppServer().get( `${this.route}/messages/user/:userId`, authMiddleware, this.getMessages.bind(this));
 
-		this.app.getAppServer().post(
-			`${this.route}/messages/mark-as-read`,
-			authMiddleware,
-			this.markAsRead.bind(this)
-		);
+		this.app.getAppServer().get( `${this.route}/messages/group/:groupId`, authMiddleware, this.getGroupMessages.bind(this));
+
+		this.app.getAppServer().post( `${this.route}/messages/mark-as-read`, authMiddleware, this.markAsRead.bind(this));
 
 		this.app.getAppServer().post(
 			`${this.route}/messages/send-with-file`,
@@ -76,16 +64,8 @@ export class MessageController {
 			}, // Utiliza el middleware de subida
 			this.sendMessageWithFile.bind(this)
 		);
-		this.app.getAppServer().delete(
-			`${this.route}/messages/:messageId`,
-			authMiddleware,
-			this.deleteMessage.bind(this)
-		);
-		this.app.getAppServer().get(
-			`${this.route}/messages/unread`,
-			authMiddleware,
-			this.getUnreadConversations.bind(this)
-		);
+		this.app.getAppServer().delete( `${this.route}/messages/:messageId`, authMiddleware, this.deleteMessage.bind(this));
+		this.app.getAppServer().get( `${this.route}/messages/unread`, authMiddleware, this.getUnreadConversations.bind(this));
 	}
 	// Método para enviar un mensaje a través de HTTP
 	private async sendMessage(req: AuthRequest, res: Response): Promise<Response> {
@@ -373,6 +353,116 @@ file: req.file,
 			.json({ message: 'Error al obtener conversaciones', err });
 		}
 	}
+private async getConversations(req: AuthRequest, res: Response) {
+  try {
+    const currentUserId = req.userId!;
+    const mongoose = this.app.getClientMongoose();
+    const User = UserModel(mongoose);
+
+    // paginación opcional
+    const skip = Number(req.query.skip ?? 0);
+    const limit = Number(req.query.limit ?? 30); // por defecto 30
+
+    // 1) Traer amigos del usuario
+    const me = await User.findById(currentUserId).select('friends').lean();
+    const friendIds = (me?.friends ?? []).map((f: any) => new Types.ObjectId(String(f)));
+
+    if (!friendIds.length) {
+      return res.status(StatusCodes.OK).json({ conversations: [] });
+    }
+
+    // 2 Agregación ultimo mensaje y no leídos por peer (solo DMs, no grupos)
+    const pipeline: PipelineStage[] = [
+      {
+        $match: {
+          isGroupMessage: false,
+          $or: [
+            { sender: new Types.ObjectId(currentUserId), receiver: { $in: friendIds } },
+            { receiver: new Types.ObjectId(currentUserId), sender: { $in: friendIds } },
+          ],
+        },
+      },
+      { $sort: { createdAt: -1 } }, // para que $first tome el último mensaje
+      {
+        $group: {
+          _id: {
+            // peerId = si YO soy el sender => el receiver; en otro caso => el sender
+            $cond: [
+              { $eq: ['$sender', new Types.ObjectId(currentUserId)] },
+              '$receiver',
+              '$sender',
+            ],
+          },
+          lastMessage: { $first: '$$ROOT' },
+          lastMessageAt: { $first: '$createdAt' },
+          unreadCount: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$receiver', new Types.ObjectId(currentUserId)] },
+                    { $eq: ['$isRead', false] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'peer',
+        },
+      },
+      { $unwind: '$peer' },
+      {
+        $project: {
+          _id: 0,
+          peer: {
+            _id: '$peer._id',
+            username: '$peer.username',
+            profile: '$peer.profile',
+          },
+          lastMessageAt: 1,
+          unreadCount: 1,
+          lastMessage: {
+            content: '$lastMessage.content',
+            createdAt: '$lastMessage.createdAt',
+            sender: '$lastMessage.sender',
+            filePath: '$lastMessage.filePath',
+            fileType: '$lastMessage.fileType',
+          },
+        },
+      },
+      { $sort: { lastMessageAt: -1 } },
+      ...(skip ? [{ $skip: skip }] : []),
+      ...(limit ? [{ $limit: limit }] : []),
+    ];
+
+    const conversations = await this.messageModel.aggregate(pipeline).exec();
+
+    // 3) Agregar amigos sin mensajes (al final)
+    const withMsgs = new Set(conversations.map((c: any) => String(c.peer._id)));
+    const friendsWithoutMsgs = friendIds.filter((fid) => !withMsgs.has(String(fid)));
+    if (friendsWithoutMsgs.length) {
+      const rest = await User.find({ _id: { $in: friendsWithoutMsgs } })
+        .select('_id username profile')
+        .lean();
+    }
+
+    return res.status(StatusCodes.OK).json({ conversations });
+  } catch (error) {
+    console.error('Error getConversations:', error);
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json({ message: 'Error al obtener conversaciones', error });
+  }
+}
 
 
 }

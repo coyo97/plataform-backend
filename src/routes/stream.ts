@@ -111,7 +111,7 @@ export class StreamController {
 
 			const newStream = new this.streamModel(newStreamData);
 			await newStream.save();
-
+this.socketController.emitStreamCreated(newStream);
 			// Definir la interfaz para response
 			interface StreamResponse {
 				stream: IStream;
@@ -260,7 +260,7 @@ export class StreamController {
 				return res.status(StatusCodes.NOT_FOUND).json({ message: 'Stream no encontrado o no tienes permisos' });
 			}
 
-			this.socketController.emitToRoom(streamId, 'stream-ended', { streamId });
+			this.socketController.emitStreamEnded(stream);
 			return res.status(StatusCodes.OK).json({ message: 'Stream finalizado', stream });
 		} catch (error) {
 			console.error('Error finalizando stream:', error);

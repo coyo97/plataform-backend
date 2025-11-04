@@ -8,6 +8,9 @@ import { getUploadMiddleware } from '../middlware/upload';
 import { SettingsModel } from './schemas/settings';
 import path from 'path';
 import fs from 'fs/promises';
+import { analyzeImage } from '../moderation/images/nudenetService';
+import { analyzeComment } from '../moderation/text/toxicityService';
+import { translateText } from '../moderation/text/translationService';
 
 import { UserModel } from './schemas/user';
 import {dynamicPermissionMiddleware} from '../middlware/permissionMiddleware';
@@ -37,7 +40,7 @@ export class ProfileController {
 		this.app.getAppServer().get(`${this.route}/profile`, authMiddleware, this.getProfile.bind(this));
 
 		this.app.getAppServer().put(
-			`${this.route}/profile`, authMiddleware,
+			`${this.route}/profile`, authMiddleware,dynamicPermissionMiddleware,
 			async (req, res, next) => {
 				const Settings = SettingsModel(this.app.getClientMongoose());
 				const settings = await Settings.findOne().exec();
@@ -112,17 +115,127 @@ export class ProfileController {
 
 
 	private async updateProfile(req: AuthRequest, res: Response): Promise<void> {
+		const deleteIfExists = async (p?: string) => {
+			if (!p) return;
+			try { await fs.unlink(p); } catch { /* ignore */ }
+		};
+
 		try {
 			const userId = req.userId;
-
 			if (!userId) {
 				res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no autenticado' });
 				return;
 			}
 
-			const { bio, interests } = req.body;
-			const profilePicture = req.file?.filename; // Nombre del archivo subido
+			const {
+				bio,
+				interests: interestsRaw,
+				language = 'es', // <— igual que en comentarios
+			} = req.body;
 
+			const file = req.file || undefined;
+
+			// === Flags de configuración ===
+			const Settings = SettingsModel(this.app.getClientMongoose());
+			const settings = await Settings.findOne().exec();
+
+			// Moderación de archivos (como ya lo teníamos)
+			const aiModerationEnabled = settings?.aiModerationEnabled ?? true;
+
+			// Moderación de texto en perfil (usa mismo enfoque que comentarios)
+			const profileTextModerationEnabled =
+				(settings as any)?.profileTextModerationEnabled ??
+				settings?.commentModerationEnabled ??
+				true;
+
+			// === Moderación de archivo de foto (si se subió) ===
+			if (file) {
+				// solo imágenes para foto de perfil
+				if (!file.mimetype.startsWith('image/')) {
+					await deleteIfExists(file.path);
+					res.status(StatusCodes.BAD_REQUEST).json({ message: 'Solo se permiten imágenes para la foto de perfil.' });
+					return;
+				}
+
+				if (aiModerationEnabled) {
+					const isNSFW = await analyzeImage(file.path);
+					if (isNSFW) {
+						await deleteIfExists(file.path);
+						res.status(StatusCodes.BAD_REQUEST).json({ message: 'Imagen inapropiada detectada. Sube otra imagen.' });
+						return;
+					}
+				}
+			}
+
+			// === Parseo de intereses (igual a tu lógica original) ===
+			let parsedInterests: string[] = [];
+			if (typeof interestsRaw !== 'undefined') {
+				if (Array.isArray(interestsRaw)) {
+					parsedInterests = interestsRaw.map((i: any) => String(i).trim()).filter(Boolean);
+				} else if (typeof interestsRaw === 'string' && interestsRaw.trim().length > 0) {
+					try {
+						const maybe = JSON.parse(interestsRaw);
+						if (Array.isArray(maybe)) {
+							parsedInterests = maybe.map((i: any) => String(i).trim()).filter(Boolean);
+						} else {
+							parsedInterests = interestsRaw.split(',').map(s => s.trim()).filter(Boolean);
+						}
+					} catch {
+						parsedInterests = interestsRaw.split(',').map(s => s.trim()).filter(Boolean);
+					}
+				} else if (typeof interestsRaw === 'string' && interestsRaw.trim().length === 0) {
+					parsedInterests = [];
+				}
+			}
+
+			// === Moderación de BIO e INTERESTS (misma lógica que comentarios) ===
+			if (profileTextModerationEnabled) {
+				// 1) BIO
+				if (typeof bio === 'string' && bio.trim().length > 0) {
+					let bioToCheck = bio;
+					if (language && language !== 'en') {
+						try {
+							bioToCheck = await translateText(bio, 'en');
+						} catch (e) {
+							console.error('Error en la traducción de bio:', e);
+						}
+					}
+					const bioBad = await analyzeComment(bioToCheck);
+					if (bioBad) {
+						// si había archivo, límpialo
+						await deleteIfExists(file?.path);
+						res.status(StatusCodes.BAD_REQUEST).json({ message: 'La biografía contiene lenguaje inapropiado.' });
+						return;
+					}
+				}
+
+				// 2) INTERESTS (uno por uno)
+				const badInterests: string[] = [];
+				for (const it of parsedInterests) {
+					if (!it) continue;
+					let interestToCheck = it;
+					if (language && language !== 'en') {
+						try {
+							interestToCheck = await translateText(it, 'en');
+						} catch (e) {
+							console.error('Error en la traducción de interest:', e);
+						}
+					}
+					const itBad = await analyzeComment(interestToCheck);
+					if (itBad) badInterests.push(it);
+				}
+
+				if (badInterests.length > 0) {
+					await deleteIfExists(file?.path);
+					res.status(StatusCodes.BAD_REQUEST).json({
+						message: 'Algunos intereses contienen lenguaje inapropiado.',
+						invalid: badInterests,
+					});
+					return;
+				}
+			}
+
+			// === Persistencia (tal cual tu flujo) ===
 			let profile = await this.profileModel.findOne({ user: userId }).exec();
 			if (!profile) profile = new this.profileModel({ user: userId });
 
@@ -130,32 +243,12 @@ export class ProfileController {
 				profile.bio = bio;
 			}
 
-			if (typeof interests !== 'undefined') {
-				// interests puede venir como JSON string o como texto con comas
-				let parsed: string[] = [];
-				if (Array.isArray(interests)) {
-					parsed = interests.map((i: any) => String(i).trim()).filter(Boolean);
-				} else if (typeof interests === 'string' && interests.trim().length > 0) {
-					// intenta parsear JSON ["a","b"] o cae a split por coma
-					try {
-						const maybe = JSON.parse(interests);
-						if (Array.isArray(maybe)) {
-							parsed = maybe.map((i: any) => String(i).trim()).filter(Boolean);
-						} else {
-							parsed = interests.split(',').map(s => s.trim()).filter(Boolean);
-						}
-					} catch {
-						parsed = interests.split(',').map(s => s.trim()).filter(Boolean);
-					}
-				} else if (typeof interests === 'string' && interests.trim().length === 0) {
-					// si envías string vacío explícitamente, interpretamos como limpiar intereses
-					parsed = [];
-				}
-				profile.interests = parsed;
+			if (typeof interestsRaw !== 'undefined') {
+				profile.interests = parsedInterests;
 			}
 
-			if (profilePicture) {
-				profile.profilePicture = `uploads/${profilePicture}`; // Guarda ruta relativa
+			if (file?.filename) {
+				profile.profilePicture = `uploads/${file.filename}`; // guarda ruta relativa
 			}
 
 			profile.updated_at = new Date();
@@ -164,9 +257,13 @@ export class ProfileController {
 			res.status(StatusCodes.OK).json({ profile });
 		} catch (error) {
 			console.error('Error al actualizar el perfil:', error);
+			if (req.file?.path) {
+				try { await fs.unlink(req.file.path); } catch { /* ignore */ }
+			}
 			res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al actualizar el perfil', error });
 		}
 	}
+
 
 	private async getAuthorProfile(req: AuthRequest, res: Response): Promise<Response> {
 		try {

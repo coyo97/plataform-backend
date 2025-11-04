@@ -649,6 +649,24 @@ socket.on('screen-share-ice', ({ streamId, to, candidate, origin }) => {
 console.log('[[ROOM]] socket.leave(%s) by user=%s', streamId, userId);
 
 		});
+socket.on('end-stream', async ({ streamId }: { streamId: string }) => {
+  const userId = socket.data.userId;
+  const stream = await this.streamModel.findById(streamId);
+  if (!stream) return;
+  if (stream.userId.toString() !== userId) {
+    socket.emit('action-error', { message: 'No tienes permiso' });
+    return;
+  }
+  if (stream.active) {
+    stream.active = false;
+    stream.endedAt = new Date();
+    const saved = await stream.save();
+    this.io.to(streamId).emit('stream-ended', { streamId });
+    this.io.emit('stream-ended', { streamId: String((saved as any)._id) });
+    this.streamViewers.delete(streamId);
+    this.bannedViewers.delete(streamId);
+  }
+});
 
 		socket.on('disconnect', () => {
 			console.log(`Usuario desconectado: ${userId}`);
@@ -746,6 +764,51 @@ console.log('[[ROOM]] socket.leave(%s) by user=%s', streamId, userId);
 	}
 private activeScreenStreams: Set<string> = new Set(); // streamIds con pantalla activa
 private mutedStreamers: Set<string> = new Set();      // streamIds cuyo streamer está silenciado
+// dentro de class SocketController { ... }
+
+// --- Helper para evitar mandar campos pesados/indeseados ---
+private sanitizeStream(doc: any) {
+  if (!doc) return doc;
+  const s = typeof doc.toObject === 'function' ? doc.toObject() : { ...doc };
+  // quita campos que no quieras publicar globalmente
+  delete s.streamKey;
+  delete s.accessCode;
+  return s;
+}
+
+/** Emitir a todos los clientes que un stream fue creado (feed en tiempo real) */
+public emitStreamCreated(stream: IStream | any) {
+  const payload = this.sanitizeStream(stream);
+  // Nombre alineado con tu EVENTS (frontend): 'stream-created'
+  this.io.emit('stream-created', payload);
+  console.log('[[FEED]] stream-created emitido _id=%s title=%s', payload?._id, payload?.title);
+}
+
+/** Emitir que un stream terminó.
+ *  Soporta: (a) sólo streamId, o (b) stream completo con active=false, endedAt.
+ */
+public emitStreamEnded(streamOrId: string | IStream | any) {
+  if (typeof streamOrId === 'string') {
+    this.io.emit('stream-ended', { streamId: streamOrId });
+    console.log('[[FEED]] stream-ended emitido streamId=%s (id only)', streamOrId);
+    return;
+  }
+  const s = this.sanitizeStream(streamOrId);
+  // aseguramos la marca de terminación
+  s.active = false;
+  if (!s.endedAt) s.endedAt = new Date().toISOString();
+
+  // Mandamos ambos por compatibilidad: id + stream (tu hook acepta cualquiera)
+  this.io.emit('stream-ended', { streamId: s._id, stream: s });
+  console.log('[[FEED]] stream-ended emitido _id=%s title=%s (full)', s?._id, s?.title);
+}
+
+/** (Opcional) Actualización parcial de un stream: título, thumbnail, active, etc. */
+public emitStreamUpdated(streamId: string, patch: Partial<IStream>) {
+  const sanitized = this.sanitizeStream(patch);
+  this.io.emit('stream-updated', { streamId, patch: sanitized });
+  console.log('[[FEED]] stream-updated emitido streamId=%s keys=%s', streamId, Object.keys(sanitized));
+}
 
 }
 
