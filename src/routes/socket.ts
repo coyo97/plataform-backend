@@ -27,6 +27,7 @@ export class SocketController {
 	private streamModel: Model<IStream>
 	private userModel: ReturnType<typeof UserModel>;
 	private streamViewers: Map<string, Set<string>> = new Map();
+	private onlineUsers: Set<string>;
 
 	constructor(io: SocketIOServer, app: App) {
 		this.io = io;
@@ -35,6 +36,7 @@ export class SocketController {
 		this.messageModel = MessageModel(app.getClientMongoose());
 		this.groupModel = GroupModel(app.getClientMongoose());
 		this.streamModel = StreamModel;
+		this.onlineUsers = new Set();
 		this.initializeSocketEvents();
 	}
 
@@ -71,7 +73,25 @@ export class SocketController {
 			console.log('[BACK] set connected', userId, socket.id);
 			console.log('[BACK] map keys →', Array.from(this.connectedUsers.keys()));
 
+   const hadEntry = this.connectedUsers.has(userId);
+      this.connectedUsers.set(userId, socket.id);
+      console.log('[BACK] set connected', userId, socket.id);
 
+      //  PRESENCIA: si el usuario NO estaba online, márcalo y emite evento
+      if (!this.onlineUsers.has(userId)) {
+        this.onlineUsers.add(userId);
+        this.io.emit('presence:update', { userId, online: true });
+      }
+
+      //  Snapshot inicial de presencia por ACK
+      socket.on('presence:list', (cb: (ids: string[]) => void) => {
+        try {
+          cb(Array.from(this.onlineUsers));
+        } catch (e) {
+          console.error('presence:list error', e);
+          cb([]); // fallback seguro
+        }
+      });
 			// Escuchar el evento para unirse a una sala
 			socket.on('join-room', (roomId: string) => {
 				socket.join(roomId);
@@ -89,10 +109,21 @@ export class SocketController {
 			}
 
 			// Manejar desconexión
-			socket.on('disconnect', () => {
-				console.log(`Usuario desconectado: ${userId}`);
-				this.connectedUsers.delete(userId);
-			});
+		   socket.on('disconnect', () => {
+        console.log(`Usuario desconectado: ${userId}`);
+
+        // Sólo borra la entrada si el socket actual es el asignado (evita pisar otra pestaña nueva)
+        const current = this.connectedUsers.get(userId);
+        if (current === socket.id) {
+          this.connectedUsers.delete(userId);
+
+          //  PRESENCIA: pasa a offline sólo si ya no tiene socket asignado
+          if (this.onlineUsers.has(userId)) {
+            this.onlineUsers.delete(userId);
+            this.io.emit('presence:update', { userId, online: false });
+          }
+        }
+      });
 		});
 	}
 
