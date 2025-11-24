@@ -10,6 +10,7 @@ import { SettingsModel } from './schemas/settings';
 import SocketController from './socket';
 import { Types, PipelineStage } from 'mongoose';
 import { UserModel } from './schemas/user';
+import {dynamicPermissionMiddleware} from '../middlware/permissionMiddleware';
 
 
 interface AuthRequest extends Request {
@@ -34,11 +35,11 @@ export class MessageController {
 	private initRoutes(): void {
 		this.app.getAppServer().post( `${this.route}/messages/send`, authMiddleware, this.sendMessage.bind(this));
 
-this.app.getAppServer().get( `${this.route}/messages/conversations`, authMiddleware, this.getConversations.bind(this));
+		this.app.getAppServer().get( `${this.route}/messages/conversations`, authMiddleware, dynamicPermissionMiddleware, this.getConversations.bind(this));
 
-		this.app.getAppServer().get( `${this.route}/messages/user/:userId`, authMiddleware, this.getMessages.bind(this));
+		this.app.getAppServer().get( `${this.route}/messages/user/:userId`, authMiddleware, dynamicPermissionMiddleware, this.getMessages.bind(this));
 
-		this.app.getAppServer().get( `${this.route}/messages/group/:groupId`, authMiddleware, this.getGroupMessages.bind(this));
+		this.app.getAppServer().get( `${this.route}/messages/group/:groupId`, authMiddleware,  this.getGroupMessages.bind(this));
 
 		this.app.getAppServer().post( `${this.route}/messages/mark-as-read`, authMiddleware, this.markAsRead.bind(this));
 

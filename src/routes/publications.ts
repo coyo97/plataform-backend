@@ -13,6 +13,11 @@ import { analyzeImage } from '../moderation/images/nudenetService';
 import { analyzeVideo } from "../moderation/videos/nudenetVideoService";
 import { SettingsModel } from './schemas/settings';
 import {dynamicPermissionMiddleware} from '../middlware/permissionMiddleware';
+import { analyzeComment } from '../moderation/text/toxicityService';
+import { translateText } from '../moderation/text/translationService';
+
+
+import fs from 'fs/promises';
 
 interface AuthRequest extends Request {
 	userId?: string;
@@ -58,7 +63,7 @@ export class PublicationController {
 
 		this.app.getAppServer().get(
 			`${this.route}/publications`,
-			authMiddleware, dynamicPermissionMiddleware,// Asegura autenticación para ver publicaciones
+			authMiddleware, dynamicPermissionMiddleware,
 			this.listPublications.bind(this)
 		);
 		// Ruta para obtener las publicaciones del usuario autenticado
@@ -84,13 +89,13 @@ export class PublicationController {
 		this.app.getAppServer().get( `${this.route}/publications/most-commented`, authMiddleware, this.listMostCommentedPublications.bind(this));
 
 		// Ruta para actualizar una publicación existente
-		this.app.getAppServer().put( `${this.route}/publications/:id`, authMiddleware, this.updatePublication.bind(this));
+		this.app.getAppServer().put( `${this.route}/publications/:id`, authMiddleware, dynamicPermissionMiddleware, this.updatePublication.bind(this));
 
 		// Ruta para eliminar una publicación
-		this.app.getAppServer().delete( `${this.route}/publications/:id`, authMiddleware, this.deletePublication.bind(this));
+		this.app.getAppServer().delete( `${this.route}/publications/:id`, authMiddleware,dynamicPermissionMiddleware, this.deletePublication.bind(this));
 
 		// Ruta para actualizar una publicación existente
-		this.app.getAppServer().put( `${this.route}/user-publications/:id`, authMiddleware,
+		this.app.getAppServer().put( `${this.route}/user-publications/:id`, authMiddleware, dynamicPermissionMiddleware,
 			async (req, res, next) => {
 				// Obtén el maxUploadSize desde la base de datos
 				const Settings = SettingsModel(this.app.getClientMongoose());
@@ -220,9 +225,15 @@ private async listPublications(req: AuthRequest, res: Response): Promise<void> {
 }
 
 	// Método para crear una nueva publicación
+
 private async createPublication(req: AuthRequest, res: Response): Promise<Response> {
+  const deleteIfExists = async (p?: string) => {
+    if (!p) return;
+    try { await fs.unlink(p); } catch { /* ignore */ }
+  };
+
   try {
-    const { title, content, tags, careerId } = req.body;
+    const { title, content, tags, careerId, language = 'es' } = req.body;
     const userId = req.userId;
     const file = req.file;
 
@@ -231,12 +242,14 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
     }
 
     if (!title || !content) {
+      await deleteIfExists(file?.path);
       return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El título y contenido son obligatorios' });
     }
 
     // Obtener usuario y sus carreras
     const user = await UserModel(this.app.getClientMongoose()).findById(userId).exec();
     if (!user) {
+      await deleteIfExists(file?.path);
       return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no encontrado' });
     }
 
@@ -257,32 +270,121 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
         audience = 'university';
         careerToUse = careerId;
       } else {
+        await deleteIfExists(file?.path);
         return res.status(StatusCodes.BAD_REQUEST).json({
           message: 'La carrera seleccionada no pertenece al usuario',
         });
       }
     } else {
+      await deleteIfExists(file?.path);
       return res.status(StatusCodes.BAD_REQUEST).json({
         message: 'Debes seleccionar la carrera para esta publicación',
       });
     }
 
+    // === Settings ===
     const Settings = SettingsModel(this.app.getClientMongoose());
     const settings = await Settings.findOne().exec();
-    const aiModerationEnabled = settings?.aiModerationEnabled ?? true;
 
+    const aiModerationEnabled = settings?.aiModerationEnabled ?? true;
+    const textModerationEnabled =
+      (settings as any)?.publicationTextModerationEnabled ??
+      settings?.commentModerationEnabled ??
+      true;
+
+    // === Moderación de ARCHIVOS (igual que antes, pero borrando si se rechaza) ===
     if (file && aiModerationEnabled) {
       if (file.mimetype.startsWith('image/')) {
         const isNSFW = await analyzeImage(file.path);
         if (isNSFW) {
+          await deleteIfExists(file.path);
           return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Contenido inapropiado detectado en la imagen' });
         }
       }
-      if (file.mimetype.startsWith("video/")) {
+      if (file.mimetype.startsWith('video/')) {
         const isNSFW = await analyzeVideo(file.path);
         if (isNSFW) {
+          await deleteIfExists(file.path);
           return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Contenido inapropiado detectado en el video' });
         }
+      }
+    }
+
+    // === Parseo de tags (una sola vez) ===
+    let parsedTags: string[] = [];
+    if (typeof tags === 'string') {
+      if (tags.trim().length > 0) {
+        try {
+          const maybe = JSON.parse(tags);
+          if (Array.isArray(maybe)) {
+            parsedTags = maybe.map((t: any) => String(t).trim()).filter(Boolean);
+          } else {
+            return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Formato de tags inválido, se esperaba un array.' });
+          }
+        } catch (e) {
+          await deleteIfExists(file?.path);
+          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Formato de tags inválido (JSON no válido).' });
+        }
+      }
+    }
+
+    // === Moderación de TEXTO (título, contenido, tags) como comentarios ===
+    if (textModerationEnabled) {
+      // Título
+      if (typeof title === 'string' && title.trim().length > 0) {
+        let titleToCheck = title;
+        if (language && language !== 'en') {
+          try {
+            titleToCheck = await translateText(title, 'en');
+          } catch (e) {
+            console.error('Error en la traducción del título:', e);
+          }
+        }
+        const badTitle = await analyzeComment(titleToCheck);
+        if (badTitle) {
+          await deleteIfExists(file?.path);
+          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El título contiene lenguaje inapropiado.' });
+        }
+      }
+
+      // Contenido
+      if (typeof content === 'string' && content.trim().length > 0) {
+        let contentToCheck = content;
+        if (language && language !== 'en') {
+          try {
+            contentToCheck = await translateText(content, 'en');
+          } catch (e) {
+            console.error('Error en la traducción del contenido:', e);
+          }
+        }
+        const badContent = await analyzeComment(contentToCheck);
+        if (badContent) {
+          await deleteIfExists(file?.path);
+          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El contenido contiene lenguaje inapropiado.' });
+        }
+      }
+
+      // Tags (cada uno)
+      const badTags: string[] = [];
+      for (const tag of parsedTags) {
+        let tagToCheck = tag;
+        if (language && language !== 'en') {
+          try {
+            tagToCheck = await translateText(tag, 'en');
+          } catch (e) {
+            console.error('Error en la traducción del tag:', e);
+          }
+        }
+        const tagBad = await analyzeComment(tagToCheck);
+        if (tagBad) badTags.push(tag);
+      }
+
+      if (badTags.length > 0) {
+        await deleteIfExists(file?.path);
+        return res.status(StatusCodes.BAD_REQUEST).json({
+          message: 'Algunas etiquetas contienen lenguaje inapropiado.',
+          invalid: badTags,
+        });
       }
     }
 
@@ -293,7 +395,7 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
       title,
       content,
       author: userId,
-      tags: JSON.parse(tags),
+      tags: parsedTags,
       filePath: file?.path,
       fileType: file?.mimetype,
       career: careerToUse,      // null si es invitado
@@ -311,6 +413,9 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
     return res.status(StatusCodes.CREATED).json({ publication: result });
   } catch (error) {
     console.error('Error al crear la publicación:', error);
+    if (req.file?.path) {
+      try { await fs.unlink(req.file.path); } catch { /* ignore */ }
+    }
     return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Error al crear la publicación', error });
   }
 }
@@ -360,42 +465,175 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
 	}
 
 	// Método para editar una publicación del usuario autenticado
-	private async updateUserPublication(req: AuthRequest, res: Response): Promise<Response> {
-		try {
-			const { id } = req.params;
-			const { title, content, tags } = req.body;
-			const userId = req.userId;
 
-			// Verifica si la publicación existe y si pertenece al usuario autenticado
-			const publication = await this.publicationModel.findOne({ _id: id, author: userId }).exec();
-			if (!publication) {
-				return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'No tienes permiso para editar esta publicación' });
-			}
+private async updateUserPublication(req: AuthRequest, res: Response): Promise<Response> {
+  const deleteIfExists = async (p?: string) => {
+    if (!p) return;
+    try { await fs.unlink(p); } catch { /* ignore */ }
+  };
 
-			// Actualiza la publicación con los nuevos datos
-			const updateData: Partial<IPublication> = { title, content, tags: JSON.parse(tags) };
-			console.log('Datos de actualización:', updateData);
+  try {
+    const { id } = req.params;
+    const { title, content, tags, language = 'es' } = req.body;
+    const userId = req.userId;
+    const file = req.file;
 
-			// Si hay una nueva imagen, actualiza el campo de imagen
-			if (req.file) {
-				updateData.filePath = req.file.path;
-				updateData.fileType = req.file.mimetype;
-			}
+    // Verifica si la publicación existe y si pertenece al usuario autenticado
+    const publication = await this.publicationModel.findOne({ _id: id, author: userId }).exec();
+    if (!publication) {
+      if (file?.path) await deleteIfExists(file.path);
+      return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'No tienes permiso para editar esta publicación' });
+    }
 
-			// Guarda los cambios
-			const updatedPublication = await this.publicationModel.findByIdAndUpdate(
-				id,
-				updateData,
-				{ new: true } // El { new: true } asegura que obtengas el documento actualizado
-			).exec();
+    // === Settings ===
+    const Settings = SettingsModel(this.app.getClientMongoose());
+    const settings = await Settings.findOne().exec();
 
-			console.log('Publicación actualizada:', updatedPublication);
-			return res.status(StatusCodes.OK).json({ publication: updatedPublication });
-		} catch (error) {
-			console.error('Error al editar la publicación:', error);
-			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al editar la publicación', error });
-		}
-	}
+    const aiModerationEnabled = settings?.aiModerationEnabled ?? true;
+    const textModerationEnabled =
+      (settings as any)?.publicationTextModerationEnabled ??
+      settings?.commentModerationEnabled ??
+      true;
+
+    // === Moderación de ARCHIVO (si sube uno nuevo) ===
+    if (file && aiModerationEnabled) {
+      if (file.mimetype.startsWith('image/')) {
+        const isNSFW = await analyzeImage(file.path);
+        if (isNSFW) {
+          await deleteIfExists(file.path);
+          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Contenido inapropiado detectado en la imagen' });
+        }
+      } else if (file.mimetype.startsWith('video/')) {
+        const isNSFW = await analyzeVideo(file.path);
+        if (isNSFW) {
+          await deleteIfExists(file.path);
+          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Contenido inapropiado detectado en el video' });
+        }
+      }
+    }
+
+    // === Parseo de tags (si vienen) ===
+    let parsedTags: string[] | undefined = undefined;
+    if (typeof tags === 'string') {
+      if (tags.trim().length > 0) {
+        try {
+          const maybe = JSON.parse(tags);
+          if (Array.isArray(maybe)) {
+            parsedTags = maybe.map((t: any) => String(t).trim()).filter(Boolean);
+          } else {
+            await deleteIfExists(file?.path);
+            return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Formato de tags inválido, se esperaba un array.' });
+          }
+        } catch (e) {
+          await deleteIfExists(file?.path);
+          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Formato de tags inválido (JSON no válido).' });
+        }
+      } else {
+        parsedTags = []; // limpiar tags si mandan string vacío
+      }
+    }
+
+    // === Moderación de TEXTO (título, contenido, tags nuevos) ===
+    if (textModerationEnabled) {
+      // Título (solo si viene en request)
+      if (typeof title === 'string' && title.trim().length > 0) {
+        let titleToCheck = title;
+        if (language && language !== 'en') {
+          try {
+            titleToCheck = await translateText(title, 'en');
+          } catch (e) {
+            console.error('Error en la traducción del título (update):', e);
+          }
+        }
+        const badTitle = await analyzeComment(titleToCheck);
+        if (badTitle) {
+          await deleteIfExists(file?.path);
+          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El título contiene lenguaje inapropiado.' });
+        }
+      }
+
+      // Contenido (solo si viene en request)
+      if (typeof content === 'string' && content.trim().length > 0) {
+        let contentToCheck = content;
+        if (language && language !== 'en') {
+          try {
+            contentToCheck = await translateText(content, 'en');
+          } catch (e) {
+            console.error('Error en la traducción del contenido (update):', e);
+          }
+        }
+        const badContent = await analyzeComment(contentToCheck);
+        if (badContent) {
+          await deleteIfExists(file?.path);
+          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El contenido contiene lenguaje inapropiado.' });
+        }
+      }
+
+      // Tags (si se enviaron)
+      if (parsedTags) {
+        const badTags: string[] = [];
+        for (const tag of parsedTags) {
+          if (!tag) continue;
+          let tagToCheck = tag;
+          if (language && language !== 'en') {
+            try {
+              tagToCheck = await translateText(tag, 'en');
+            } catch (e) {
+              console.error('Error en la traducción del tag (update):', e);
+            }
+          }
+          const tagBad = await analyzeComment(tagToCheck);
+          if (tagBad) badTags.push(tag);
+        }
+
+        if (badTags.length > 0) {
+          await deleteIfExists(file?.path);
+          return res.status(StatusCodes.BAD_REQUEST).json({
+            message: 'Algunas etiquetas contienen lenguaje inapropiado.',
+            invalid: badTags,
+          });
+        }
+      }
+    }
+
+    // === Construir updateData sin romper nada (solo actualiza lo que venga) ===
+    const updateData: Partial<IPublication> = {};
+
+    if (typeof title === 'string') {
+      updateData.title = title;
+    }
+    if (typeof content === 'string') {
+      updateData.content = content;
+    }
+    if (parsedTags !== undefined) {
+      updateData.tags = parsedTags;
+    }
+
+    if (file) {
+      updateData.filePath = file.path;
+      updateData.fileType = file.mimetype;
+    }
+
+    console.log('Datos de actualización:', updateData);
+
+    // Guarda los cambios
+    const updatedPublication = await this.publicationModel.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true }
+    ).exec();
+
+    console.log('Publicación actualizada:', updatedPublication);
+    return res.status(StatusCodes.OK).json({ publication: updatedPublication });
+  } catch (error) {
+    console.error('Error al editar la publicación:', error);
+    if (req.file?.path) {
+      try { await fs.unlink(req.file.path); } catch { /* ignore */ }
+    }
+    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al editar la publicación', error });
+  }
+}
+
 	// Método para eliminar una publicación del usuario autenticado
 	private async deleteUserPublication(req: AuthRequest, res: Response): Promise<Response> {
 		try {

@@ -37,7 +37,7 @@ export class ProfileController {
 
 	private initRoutes(): void {
 
-		this.app.getAppServer().get(`${this.route}/profile`, authMiddleware, this.getProfile.bind(this));
+		this.app.getAppServer().get(`${this.route}/profile`, authMiddleware, dynamicPermissionMiddleware, this.getProfile.bind(this));
 
 		this.app.getAppServer().put(
 			`${this.route}/profile`, authMiddleware,dynamicPermissionMiddleware,
@@ -58,7 +58,7 @@ export class ProfileController {
 		);
 
 		this.app.getAppServer().get(`${this.route}/authors/:id`, authMiddleware, dynamicPermissionMiddleware, this.getAuthorProfile.bind(this));
-		this.app.getAppServer().delete(`${this.route}/profile/photo`, authMiddleware,this.deleteProfilePhoto.bind(this));
+		this.app.getAppServer().delete(`${this.route}/profile/photo`, authMiddleware, dynamicPermissionMiddleware, this.deleteProfilePhoto.bind(this));
 	}
 
 	private async getProfile(req: AuthRequest, res: Response): Promise<Response> {

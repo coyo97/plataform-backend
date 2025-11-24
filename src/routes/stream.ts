@@ -7,6 +7,7 @@ import { StreamModel, IStream } from './schemas/stream';
 import { v4 as uuidv4 } from 'uuid'; // Importa uuid
 import SocketController from './socket';
 import { UserModel } from './schemas/user';
+import { dynamicPermissionMiddleware } from '../middlware/permissionMiddleware';
 
 interface AuthRequest extends Request {
 	userId?: string;
@@ -32,8 +33,8 @@ export class StreamController {
 	}
 
 	private initRoutes(): void {
-		this.app.getAppServer().get(`${this.route}/streams`, authMiddleware, this.getStreams.bind(this));
-		this.app.getAppServer().post(`${this.route}/streams`, authMiddleware, this.createStream.bind(this));
+		this.app.getAppServer().get(`${this.route}/streams`, authMiddleware,dynamicPermissionMiddleware, this.getStreams.bind(this));
+		this.app.getAppServer().post(`${this.route}/streams`, authMiddleware,dynamicPermissionMiddleware, this.createStream.bind(this));
 		this.app.getAppServer().delete(`${this.route}/streams/:streamId`, authMiddleware, this.deleteStream.bind(this));
 
 		// En StreamController constructor o método initRoutes
