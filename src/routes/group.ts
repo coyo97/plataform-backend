@@ -5,6 +5,9 @@ import mongoose, { Types } from 'mongoose'; // Importa mongoose para usar Object
 import { GroupModel, IGroup } from './schemas/group';
 import App from '../app';
 import { authMiddleware } from '../middlware/authMiddlewares';
+import SocketController from './socket'; 
+import { NotificationModel } from './schemas/notification';
+
 
 interface AuthRequest extends Request {
 	userId?: string;
@@ -14,10 +17,17 @@ export class GroupController {
 	private route: string;
 	private app: App;
 	private groupModel: ReturnType<typeof GroupModel>;
+		private notificationModel: ReturnType<typeof NotificationModel>;
 
-	constructor(app: App, route: string) {
+		private socketController: SocketController;
+
+
+	constructor(app: App, route: string, socketController:SocketController) {
 		this.route = route;
 		this.app = app;
+				this.notificationModel = NotificationModel(this.app.getClientMongoose());
+		this.socketController = socketController;
+
 		this.groupModel = GroupModel(this.app.getClientMongoose());
 		this.initRoutes();
 	}
@@ -111,48 +121,78 @@ this.app.getAppServer().post( `${this.route}/groups/:groupId/admins/revoke`, aut
 		}
 	}
 	// Método para agregar un usuario al grupo
-	private async addUserToGroup(req: AuthRequest, res: Response): Promise<Response> {
-		try {
-			const userId = req.userId;
-			if (!userId) {
-				return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no autenticado' });
-			}
-			const { groupId } = req.params;
-			const { userToAddId } = req.body; // ID del usuario a agregar
-
-			if (!userToAddId) {
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: 'User ID to add is required' });
-			}
-
-			const group = await this.groupModel.findById(groupId);
-			if (!group) {
-				return res.status(StatusCodes.NOT_FOUND).json({ message: 'Grupo no encontrado' });
-			}
-
-			// Verificar si el usuario que realiza la solicitud es el creador o un administrador
-			if (
-				group.createdBy.toString() !== userId &&
-				!group.admins.map((id) => id.toString()).includes(userId)
-			) {
-				return res.status(StatusCodes.FORBIDDEN).json({ message: 'No tienes permiso para agregar usuarios a este grupo' });
-			}
-
-			const userToAddObjectId = new mongoose.Types.ObjectId(userToAddId);
-
-			// Verificar si el usuario ya es miembro del grupo
-			if (group.members.includes(userToAddObjectId)) {
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El usuario ya es miembro del grupo' });
-			}
-
-			group.members.push(userToAddObjectId);
-			await group.save();
-
-			return res.status(StatusCodes.OK).json({ group });
-		} catch (error) {
-			console.error('Error al agregar usuario al grupo:', error);
-			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al agregar usuario al grupo', error });
+private async addUserToGroup(req: AuthRequest, res: Response): Promise<Response> {
+	try {
+		const userId = req.userId;
+		if (!userId) {
+			return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no autenticado' });
 		}
+
+		const { groupId } = req.params;
+		const { userToAddId } = req.body; // ID del usuario a agregar
+
+		if (!userToAddId) {
+			return res
+				.status(StatusCodes.BAD_REQUEST)
+				.json({ message: 'User ID to add is required' });
+		}
+
+		const group = await this.groupModel.findById(groupId);
+		if (!group) {
+			return res
+				.status(StatusCodes.NOT_FOUND)
+				.json({ message: 'Grupo no encontrado' });
+		}
+
+		// Verificar si el usuario que realiza la solicitud es el creador o un administrador
+		if (
+			group.createdBy.toString() !== userId &&
+			!group.admins.map((id) => id.toString()).includes(userId)
+		) {
+			return res
+				.status(StatusCodes.FORBIDDEN)
+				.json({ message: 'No tienes permiso para agregar usuarios a este grupo' });
+		}
+
+		const userToAddObjectId = new mongoose.Types.ObjectId(userToAddId);
+
+		// Verificar si el usuario ya es miembro del grupo
+		if (group.members.includes(userToAddObjectId)) {
+			return res
+				.status(StatusCodes.BAD_REQUEST)
+				.json({ message: 'El usuario ya es miembro del grupo' });
+		}
+
+		// Agregar miembro
+		group.members.push(userToAddObjectId);
+		await group.save();
+
+		// Nota: no usamos this.user, solo un mensaje genérico
+		const notification = new this.notificationModel({
+			recipient: userToAddObjectId,
+			sender: new mongoose.Types.ObjectId(userId),
+			type: 'group_added',
+			message: `Has sido agregado al grupo "${group.name}"`,
+			data: { groupId: group._id },
+		});
+
+		await notification.save();
+
+		// Emitir en tiempo real al usuario agregado
+		this.socketController.emitNotification(
+			userToAddObjectId.toString(),
+			notification
+		);
+
+		return res.status(StatusCodes.OK).json({ group });
+	} catch (error) {
+		console.error('Error al agregar usuario al grupo:', error);
+		return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+			message: 'Error al agregar usuario al grupo',
+			error,
+		});
 	}
+}
 
 	// Método para eliminar un usuario del grupo
 	private async removeUserFromGroup(req: AuthRequest, res: Response): Promise<Response> {

@@ -92,7 +92,7 @@ export default class App {
 		const userController = new UserController(this, `/${this.apiVersion}/${this.apiPrefix}/${service}`, this.socketController);
 		userController.initLoginRoute();
 		new RoleController(this, `/${this.apiVersion}/${this.apiPrefix}`);
-		new PublicationController(this, `/${this.apiVersion}/${this.apiPrefix}`);
+		new PublicationController(this, `/${this.apiVersion}/${this.apiPrefix}`, this.socketController);
 		new ProfileController(this, `/${this.apiVersion}/${this.apiPrefix}`);
 
 		new CommentController(this, `/${this.apiVersion}/${this.apiPrefix}`, this.socketController);
@@ -100,7 +100,7 @@ export default class App {
 
 		// Pasar socketController a MessageController y NotificationController
 		new MessageController(this, `/${this.apiVersion}/${this.apiPrefix}`,  this.socketController);
-		new GroupController(this, `/${this.apiVersion}/${this.apiPrefix}`);
+		new GroupController(this, `/${this.apiVersion}/${this.apiPrefix}`, this.socketController);
 		new StreamController( this, `/${this.apiVersion}/${this.apiPrefix}`, this.socketController);
 		new NotificationController(this, `/${this.apiVersion}/${this.apiPrefix}`,  this.socketController);
 		new FileFormatController(this, `/${this.apiVersion}/${this.apiPrefix}`);
@@ -120,8 +120,8 @@ export default class App {
 	}
 
 	private async setupDatabase() {
-const connectionString = `mongodb://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}:${this.databasePort}/${this.databaseName}`;
-//const connectionString = `mongodb+srv://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}/${this.databaseName}?retryWrites=true&w=majority&appName=Cluster0`;
+//const connectionString = `mongodb://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}:${this.databasePort}/${this.databaseName}`;
+const connectionString = `mongodb+srv://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}/${this.databaseName}?retryWrites=true&w=majority&appName=Cluster0`;
 
 			console.log('connection', connectionString);
 		try {

@@ -15,6 +15,8 @@ import { SettingsModel } from './schemas/settings';
 import {dynamicPermissionMiddleware} from '../middlware/permissionMiddleware';
 import { analyzeComment } from '../moderation/text/toxicityService';
 import { translateText } from '../moderation/text/translationService';
+import SocketController from './socket';
+import { NotificationModel } from './schemas/notification';
 
 
 import fs from 'fs/promises';
@@ -27,10 +29,16 @@ export class PublicationController {
 	private route: string;
 	private app: App;
 	private publicationModel: ReturnType<typeof PublicationModel>;
+		private notificationModel: ReturnType<typeof NotificationModel>;
 
-	constructor(app: App, route: string) {
+		private socketController: SocketController;
+
+	constructor(app: App, route: string, socketController:SocketController) {
 		this.route = route;
 		this.app = app;
+						this.notificationModel = NotificationModel(this.app.getClientMongoose());
+		this.socketController = socketController;
+
 		this.publicationModel = PublicationModel(this.app.getClientMongoose());
 		this.initRoutes();
 	}
@@ -822,44 +830,87 @@ private async updateUserPublication(req: AuthRequest, res: Response): Promise<Re
 		console.log(`Enviando notificación al usuario ${user._id} por reportes acumulados.`);
 	}
 	// Método para dar like a una publicación
-	private async likePublication(req: AuthRequest, res: Response): Promise<Response> {
-		try {
-			const { publicationId } = req.params;
-			const userId = req.userId;
+private async likePublication(req: AuthRequest, res: Response): Promise<Response> {
+	try {
+		const { publicationId } = req.params;
+		const userId = req.userId;
 
-			if (!userId) {
-				return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no autenticado' });
-			}
+		if (!userId) {
+			return res
+				.status(StatusCodes.UNAUTHORIZED)
+				.json({ message: 'Usuario no autenticado' });
+		}
 
-			const userObjectId = new mongoose.Types.ObjectId(userId);
+		const userObjectId = new mongoose.Types.ObjectId(userId);
 
-			// Intentar agregar el userId al array de likes usando $addToSet
-			const publication = await this.publicationModel.findByIdAndUpdate(
-				publicationId,
-				{
-					$addToSet: { likes: userObjectId },
-					$inc: { likesCount: 1 },
-				},
-				{ new: true }
-			).exec();
+		// 1) Buscar la publicación primero
+		const publication = await this.publicationModel
+			.findById(publicationId)
+			.exec();
 
-			if (!publication) {
-				return res.status(StatusCodes.NOT_FOUND).json({ message: 'Publicación no encontrada' });
-			}
+		if (!publication) {
+			return res
+				.status(StatusCodes.NOT_FOUND)
+				.json({ message: 'Publicación no encontrada' });
+		}
 
+		// 2) Verificar si ya había dado like
+		const alreadyLiked = publication.likes.some((id: mongoose.Types.ObjectId) =>
+			id.equals(userObjectId)
+		);
+
+		if (alreadyLiked) {
+			// No duplicamos likes ni likesCount
 			return res.status(StatusCodes.OK).json({
-				message: 'Has dado like a la publicación',
+				message: 'Ya habías dado like a esta publicación',
 				likesCount: publication.likes.length,
 			});
-
-		} catch (error) {
-			console.error('Error al dar like a la publicación:', error);
-			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
-				message: 'Error al dar like a la publicación',
-				error,
-			});
 		}
+
+		// 3) Agregar like y actualizar contador
+		publication.likes.push(userObjectId);
+		// por si likesCount no existe o está desfasado
+		publication.likesCount = (publication.likesCount ?? publication.likes.length);
+		await publication.save();
+
+		// Solo notificamos si el que da like NO es el autor
+		const authorId = publication.author?.toString?.() ?? publication.author;
+
+		if (authorId && authorId !== userId) {
+			// Obtener username del que dio like
+			const User = UserModel(this.app.getClientMongoose());
+			const liker = await User.findById(userId).select('username').exec();
+			const likerName = liker?.username ?? 'Un usuario';
+
+			const notification = new this.notificationModel({
+				recipient: authorId,               // autor de la publicación
+				sender: userObjectId,              // quien dio like
+				type: 'publication_liked',         
+				message: `${likerName} le ha dado like a tu publicación`,
+				data: { publicationId: publication._id },
+			});
+
+			await notification.save();
+
+			this.socketController.emitNotification(
+				authorId.toString(),
+				notification
+			);
+		}
+
+		return res.status(StatusCodes.OK).json({
+			message: 'Has dado like a la publicación',
+			likesCount: publication.likes.length,
+		});
+	} catch (error) {
+		console.error('Error al dar like a la publicación:', error);
+		return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+			message: 'Error al dar like a la publicación',
+			error,
+		});
 	}
+}
+
 
 	private async unlikePublication(req: AuthRequest, res: Response): Promise<Response> {
 		try {

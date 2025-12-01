@@ -572,55 +572,86 @@ export class SocketController {
 		// SCREEN-SHARE OFFER: admite target directo (to) o broadcast (sin to)
 		// SCREEN-SHARE OFFER (propaga `origin`)
 		socket.on('screen-share-offer', ({ streamId, offer, to, origin }) => {
-			if (to && to === socket.id) {
-				console.warn('[[GUARD]] self-target in screen-share-offer', { streamId, to });
+			// Si hay un destinatario directo → relay normal
+			if (to) {
+				if (to === socket.id) {
+					console.warn('[[GUARD]] ignoring self screen-share-offer', { streamId, to });
+					return;
+				}
+
+				console.log(
+					'[[SIG]] screen-share-offer: from=%s to=%s origin=%s streamId=%s',
+					socket.id, to, origin ?? '(none)', streamId
+				);
+
+				socket.to(to).emit('screen-share-offer', {
+					offer,
+					from: socket.id,
+					origin: origin ?? null,
+					streamId,
+				});
+
 				return;
 			}
 
-			if (to) {
-				// Target directo (recomendado para SFU ligero)
-				console.log(
-					'[[SIG]] screen-share-offer (target): from=%s to=%s origin=%s streamId=%s',
-					socket.id, to, origin ?? '(none)', streamId
-				);
-				socket.to(to).emit('screen-share-offer', { offer, from: socket.id, origin });
-			} else {
-				// Broadcast a la sala (menos recomendado)
-				console.log(
-					'[[SIG]] screen-share-offer (broadcast): from=%s origin=%s streamId=%s',
-					socket.id, origin ?? '(none)', streamId
-				);
-				socket.to(streamId).emit('screen-share-offer', { offer, from: socket.id, origin });
-			}
+			// Si NO hay "to" → BROADCAST a todos los viewers del stream
+			console.log(
+				'[[SIG]] screen-share-offer BROADCAST: from=%s streamId=%s',
+				socket.id, streamId
+			);
+
+			socket.to(streamId).emit('screen-share-offer', {
+				offer,
+				from: socket.id,
+				origin: origin ?? null,
+				streamId,
+			});
 		});
+
 
 		// SCREEN-SHARE ANSWER: siempre dirigido (propaga `origin` para simetría/depuración)
 		socket.on('screen-share-answer', ({ streamId, to, answer, origin }) => {
-			if (!to || to === socket.id) {
-				console.warn('[[GUARD]] invalid screen-share-answer target', { streamId, to });
-				socket.emit('screen-share-error', { streamId, message: 'missing or invalid "to" in screen-share-answer' });
+			if (to) {
+				if (to === socket.id) return;
+
+				socket.to(to).emit('screen-share-answer', {
+					answer,
+					from: socket.id,
+					origin,
+				});
 				return;
 			}
-			console.log(
-				'[[SIG]] screen-share-answer: from=%s to=%s origin=%s streamId=%s',
-				socket.id, to, origin ?? '(none)', streamId
-			);
-			socket.to(to).emit('screen-share-answer', { answer, from: socket.id, origin });
+
+			// Broadcast (cuando el host hace answer masiva)
+			socket.to(streamId).emit('screen-share-answer', {
+				answer,
+				from: socket.id,
+				origin,
+			});
 		});
+
 
 		// SCREEN-SHARE ICE: siempre dirigido (propaga `origin`)
 		socket.on('screen-share-ice', ({ streamId, to, candidate, origin }) => {
-			if (!to || to === socket.id) {
-				console.warn('[[GUARD]] invalid screen-share-ice target', { streamId, to });
-				socket.emit('screen-share-error', { streamId, message: 'missing or invalid "to" in screen-share-ice' });
+			if (to) {
+				if (to === socket.id) return;
+
+				socket.to(to).emit('screen-share-ice', {
+					candidate,
+					from: socket.id,
+					origin,
+				});
 				return;
 			}
-			console.log(
-				'[[ICE]] screen-share-ice: from=%s to=%s origin=%s streamId=%s hasCandidate=%s',
-				socket.id, to, origin ?? '(none)', streamId, !!candidate
-			);
-			socket.to(to).emit('screen-share-ice', { candidate, from: socket.id, origin });
+
+			// Broadcast ICE a todos
+			socket.to(streamId).emit('screen-share-ice', {
+				candidate,
+				from: socket.id,
+				origin,
+			});
 		});
+
 
 
 		/* ④ Fin de pantalla ------------------------------ */
@@ -714,34 +745,55 @@ export class SocketController {
 		});
 	}
 
-
 	// Función para actualizar la lista de espectadores y enviarla al streamer
 	private async updateStreamerViewersList(streamId: string) {
 		const viewersSet = this.streamViewers.get(streamId);
 		if (!viewersSet) return;
 
-		// Obtener los detalles de los usuarios
-		const userIds = Array.from(viewersSet);
-		const users = await this.userModel.find({ _id: { $in: userIds } })
-		.select('username')
+		// 1) Obtener los detalles de los usuarios (viewers)
+		const userIds = Array.from(viewersSet); // estos son userId (Mongo)
+		const users = await this.userModel
+		.find({ _id: { $in: userIds } })
+		.select('username profile') // si quieres foto, ya está preparado
 		.exec();
 
-		// Encontrar el socket del streamer
+		// 2) Construir payload con socketId adjunto
+		const payloadViewers = users.map((u: any) => {
+			const uid = u._id.toString();
+			const socketId = this.connectedUsers.get(uid); 
+
+			return {
+				_id: uid,
+				username: u.username,
+				// profilePicture: u.profile?.profilePicture, // descomenta si lo usas
+				socketId, 
+			};
+		});
+
+		// 3) Encontrar el socket del streamer
 		const stream = await this.streamModel.findById(streamId);
 		if (!stream) return;
 
 		const streamerId = stream.userId.toString();
 		const streamerSocketId = this.connectedUsers.get(streamerId);
 
-		this.io.to(streamId).emit('viewer-list', { viewers: users });
+		// 4) Emitir lista a la sala (si lo usas en algún lado)
+		this.io.to(streamId).emit('viewer-list', { viewers: payloadViewers });
+
+		// 5) Emitir lista enriquecida al streamer
 		if (streamerSocketId) {
-			this.io.to(streamerSocketId).emit('update-viewers', {streamId, viewers: users });
+			this.io
+			.to(streamerSocketId)
+			.emit('update-viewers', { streamId, viewers: payloadViewers });
 		}
-		this.io.emit('viewer-count', {        
+
+		// 6) Contador global de viewers
+		this.io.emit('viewer-count', {
 			streamId,
-			viewerCount: users.length,
-		});	
+			viewerCount: payloadViewers.length,
+		});
 	}
+
 	public async emitMessageDeletion(
 		messageId: string,
 		isGroup: boolean,
@@ -815,9 +867,6 @@ export class SocketController {
 		console.log('[[FEED]] stream-created emitido _id=%s title=%s', payload?._id, payload?.title);
 	}
 
-	/** Emitir que un stream terminó.
-	 *  Soporta: (a) sólo streamId, o (b) stream completo con active=false, endedAt.
-	 */
 	public emitStreamEnded(streamOrId: string | IStream | any) {
 		if (typeof streamOrId === 'string') {
 			this.io.emit('stream-ended', { streamId: streamOrId });

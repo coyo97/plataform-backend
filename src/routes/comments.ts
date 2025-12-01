@@ -13,7 +13,7 @@ import { NotificationModel } from './schemas/notification';
 import { PublicationModel } from './schemas/publication';
 
 import { SettingsModel } from './schemas/settings';
-import SocketController from './socket'; // Importamos SocketController
+import SocketController from './socket'; 
 
 interface AuthRequest extends Request {
 	userId?: string;
@@ -23,13 +23,13 @@ export class CommentController {
 	private route: string;
 	private app: App;
 	private commentModel: ReturnType<typeof CommentModel>;
-	private socketController: SocketController; // Añadimos SocketController
+	private socketController: SocketController; 
 
 	constructor(app: App, route: string, socketController: SocketController) {
 		this.route = route;
 		this.app = app;
 		this.commentModel = CommentModel(this.app.getClientMongoose());
-		this.socketController = socketController; // Inicializamos SocketController
+		this.socketController = socketController;
 		this.initRoutes();
 	}
 
