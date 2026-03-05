@@ -17,7 +17,7 @@ import { analyzeComment } from '../moderation/text/toxicityService';
 import { translateText } from '../moderation/text/translationService';
 import SocketController from './socket';
 import { NotificationModel } from './schemas/notification';
-
+import { htmlToPlainText } from '../moderation/text/htmlToPlainText';
 
 import fs from 'fs/promises';
 
@@ -77,7 +77,7 @@ export class PublicationController {
 		// Ruta para obtener las publicaciones del usuario autenticado
 		this.app.getAppServer().get(
 			`${this.route}/user-publications`, // Nueva ruta
-			authMiddleware,
+			authMiddleware, dynamicPermissionMiddleware,
 			this.listUserPublications.bind(this) // Llama al método que filtra por usuario autenticado
 		);
 		// Ruta para buscar publicaciones
@@ -103,7 +103,7 @@ export class PublicationController {
 		this.app.getAppServer().delete( `${this.route}/publications/:id`, authMiddleware,dynamicPermissionMiddleware, this.deletePublication.bind(this));
 
 		// Ruta para actualizar una publicación existente
-		this.app.getAppServer().put( `${this.route}/user-publications/:id`, authMiddleware, dynamicPermissionMiddleware,
+		this.app.getAppServer().put( `${this.route}/user-publications/:id`, authMiddleware,dynamicPermissionMiddleware,
 			async (req, res, next) => {
 				// Obtén el maxUploadSize desde la base de datos
 				const Settings = SettingsModel(this.app.getClientMongoose());
@@ -290,7 +290,6 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
       });
     }
 
-    // === Settings ===
     const Settings = SettingsModel(this.app.getClientMongoose());
     const settings = await Settings.findOne().exec();
 
@@ -300,7 +299,6 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
       settings?.commentModerationEnabled ??
       true;
 
-    // === Moderación de ARCHIVOS (igual que antes, pero borrando si se rechaza) ===
     if (file && aiModerationEnabled) {
       if (file.mimetype.startsWith('image/')) {
         const isNSFW = await analyzeImage(file.path);
@@ -318,7 +316,6 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
       }
     }
 
-    // === Parseo de tags (una sola vez) ===
     let parsedTags: string[] = [];
     if (typeof tags === 'string') {
       if (tags.trim().length > 0) {
@@ -336,9 +333,7 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
       }
     }
 
-    // === Moderación de TEXTO (título, contenido, tags) como comentarios ===
     if (textModerationEnabled) {
-      // Título
       if (typeof title === 'string' && title.trim().length > 0) {
         let titleToCheck = title;
         if (language && language !== 'en') {
@@ -355,12 +350,16 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
         }
       }
 
-      // Contenido
-      if (typeof content === 'string' && content.trim().length > 0) {
-        let contentToCheck = content;
+      const rawContent: string =
+        typeof content === 'string' ? content : '';
+
+      const plainContent = htmlToPlainText(rawContent);
+
+      if (plainContent.length > 0) {
+        let contentToCheck = plainContent;
         if (language && language !== 'en') {
           try {
-            contentToCheck = await translateText(content, 'en');
+            contentToCheck = await translateText(plainContent, 'en');
           } catch (e) {
             console.error('Error en la traducción del contenido:', e);
           }
@@ -372,7 +371,6 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
         }
       }
 
-      // Tags (cada uno)
       const badTags: string[] = [];
       for (const tag of parsedTags) {
         let tagToCheck = tag;
@@ -401,7 +399,7 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
 
     const newPublication = new this.publicationModel({
       title,
-      content,
+      content,            
       author: userId,
       tags: parsedTags,
       filePath: file?.path,
@@ -427,7 +425,6 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
     return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Error al crear la publicación', error });
   }
 }
-
 
 	private async updatePublication(req: Request, res: Response): Promise<void> {
 		try {
@@ -473,7 +470,6 @@ private async createPublication(req: AuthRequest, res: Response): Promise<Respon
 	}
 
 	// Método para editar una publicación del usuario autenticado
-
 private async updateUserPublication(req: AuthRequest, res: Response): Promise<Response> {
   const deleteIfExists = async (p?: string) => {
     if (!p) return;
@@ -486,14 +482,12 @@ private async updateUserPublication(req: AuthRequest, res: Response): Promise<Re
     const userId = req.userId;
     const file = req.file;
 
-    // Verifica si la publicación existe y si pertenece al usuario autenticado
     const publication = await this.publicationModel.findOne({ _id: id, author: userId }).exec();
     if (!publication) {
       if (file?.path) await deleteIfExists(file.path);
       return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'No tienes permiso para editar esta publicación' });
     }
 
-    // === Settings ===
     const Settings = SettingsModel(this.app.getClientMongoose());
     const settings = await Settings.findOne().exec();
 
@@ -503,7 +497,6 @@ private async updateUserPublication(req: AuthRequest, res: Response): Promise<Re
       settings?.commentModerationEnabled ??
       true;
 
-    // === Moderación de ARCHIVO (si sube uno nuevo) ===
     if (file && aiModerationEnabled) {
       if (file.mimetype.startsWith('image/')) {
         const isNSFW = await analyzeImage(file.path);
@@ -520,7 +513,6 @@ private async updateUserPublication(req: AuthRequest, res: Response): Promise<Re
       }
     }
 
-    // === Parseo de tags (si vienen) ===
     let parsedTags: string[] | undefined = undefined;
     if (typeof tags === 'string') {
       if (tags.trim().length > 0) {
@@ -541,7 +533,6 @@ private async updateUserPublication(req: AuthRequest, res: Response): Promise<Re
       }
     }
 
-    // === Moderación de TEXTO (título, contenido, tags nuevos) ===
     if (textModerationEnabled) {
       // Título (solo si viene en request)
       if (typeof title === 'string' && title.trim().length > 0) {
@@ -560,20 +551,24 @@ private async updateUserPublication(req: AuthRequest, res: Response): Promise<Re
         }
       }
 
-      // Contenido (solo si viene en request)
       if (typeof content === 'string' && content.trim().length > 0) {
-        let contentToCheck = content;
-        if (language && language !== 'en') {
-          try {
-            contentToCheck = await translateText(content, 'en');
-          } catch (e) {
-            console.error('Error en la traducción del contenido (update):', e);
+        const rawContent: string = content;
+        const plainContent = htmlToPlainText(rawContent);
+
+        if (plainContent.length > 0) {
+          let contentToCheck = plainContent;
+          if (language && language !== 'en') {
+            try {
+              contentToCheck = await translateText(plainContent, 'en');
+            } catch (e) {
+              console.error('Error en la traducción del contenido (update):', e);
+            }
           }
-        }
-        const badContent = await analyzeComment(contentToCheck);
-        if (badContent) {
-          await deleteIfExists(file?.path);
-          return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El contenido contiene lenguaje inapropiado.' });
+          const badContent = await analyzeComment(contentToCheck);
+          if (badContent) {
+            await deleteIfExists(file?.path);
+            return res.status(StatusCodes.BAD_REQUEST).json({ message: 'El contenido contiene lenguaje inapropiado.' });
+          }
         }
       }
 
@@ -604,14 +599,13 @@ private async updateUserPublication(req: AuthRequest, res: Response): Promise<Re
       }
     }
 
-    // === Construir updateData sin romper nada (solo actualiza lo que venga) ===
     const updateData: Partial<IPublication> = {};
 
     if (typeof title === 'string') {
       updateData.title = title;
     }
     if (typeof content === 'string') {
-      updateData.content = content;
+      updateData.content = content;   
     }
     if (parsedTags !== undefined) {
       updateData.tags = parsedTags;
@@ -641,6 +635,7 @@ private async updateUserPublication(req: AuthRequest, res: Response): Promise<Re
     return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al editar la publicación', error });
   }
 }
+
 
 	// Método para eliminar una publicación del usuario autenticado
 	private async deleteUserPublication(req: AuthRequest, res: Response): Promise<Response> {

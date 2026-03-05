@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid'; // Importa uuid
 import SocketController from './socket';
 import { UserModel } from './schemas/user';
 import { dynamicPermissionMiddleware } from '../middlware/permissionMiddleware';
+import { NotificationModel } from './schemas/notification';
 
 interface AuthRequest extends Request {
 	userId?: string;
@@ -21,12 +22,14 @@ export class StreamController {
 	private streamModel: Model<IStream>;
 	private socketController: SocketController;
 	private userModel: ReturnType<typeof UserModel>;
+	private notificationModel: ReturnType<typeof NotificationModel>;
 
 	constructor(app: App, route: string,  socketController: SocketController) {
 		this.route = route;
 		this.app = app;
 		this.userModel = UserModel(this.app.getClientMongoose());
 
+		this.notificationModel = NotificationModel(this.app.getClientMongoose()); 
 		this.streamModel = StreamModel;
 		this.socketController = socketController;
 		this.initRoutes();
@@ -77,63 +80,114 @@ export class StreamController {
 		}
 	}
 
-	private async createStream(req: AuthRequest, res: Response): Promise<Response> {
-		try {
-			const { title, visibility, careerIds, description } = req.body;
-			const userId = req.userId;
-			if (!userId) {
-				return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Usuario no autenticado' });
-			}
+private async createStream(req: AuthRequest, res: Response): Promise<Response> {
+	try {
+		const { title, visibility, careerIds, description } = req.body;
+		const userId = req.userId;
 
-			// Validar los campos obligatorios
-			if (!title || !visibility) {
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: 'Título y visibilidad son requeridos' });
-			}
-
-			// Generar un streamKey único
-			const streamKey = uuidv4();
-
-			const newStreamData: Partial<IStream> = {
-				title,
-				userId,
-				streamKey,
-				visibility,
-				active: true,
-				description
-			};
-
-			// Manejar opciones según la visibilidad
-			if (visibility === 'career' && careerIds && careerIds.length > 0) {
-				newStreamData.careerIds = careerIds;
-			} else if (visibility === 'private') {
-				// Generar un código de acceso aleatorio
-				newStreamData.accessCode = Math.random().toString(36).substring(2, 10);
-			}
-
-			const newStream = new this.streamModel(newStreamData);
-			await newStream.save();
-this.socketController.emitStreamCreated(newStream);
-			// Definir la interfaz para response
-			interface StreamResponse {
-				stream: IStream;
-				accessCode?: string;
-			}
-
-			// Crear el objeto response con el tipo definido
-			const response: StreamResponse = { stream: newStream };
-
-			// Si es privado, agregar el accessCode
-			if (visibility === 'private') {
-				response.accessCode = newStream.accessCode;
-				console.log('Código de acceso enviado en la respuesta:', response.accessCode);
-			}
-
-			return res.status(StatusCodes.CREATED).json(response);
-		} catch (error) {
-			console.error('Error creando stream:', error);
-			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: 'Error al crear el stream' });
+		if (!userId) {
+			return res
+				.status(StatusCodes.UNAUTHORIZED)
+				.json({ message: 'Usuario no autenticado' });
 		}
+
+		// Validar los campos obligatorios
+		if (!title || !visibility) {
+			return res
+				.status(StatusCodes.BAD_REQUEST)
+				.json({ message: 'Título y visibilidad son requeridos' });
+		}
+
+		const streamKey = uuidv4();
+
+		const newStreamData: Partial<IStream> = {
+			title,
+			userId, // lo dejo tal como lo tenías
+			streamKey,
+			visibility,
+			active: true,
+			description,
+		};
+
+		if (visibility === 'career' && Array.isArray(careerIds) && careerIds.length > 0) {
+			newStreamData.careerIds = careerIds;
+		} else if (visibility === 'private') {
+			newStreamData.accessCode = Math.random().toString(36).substring(2, 10);
+		}
+
+		const newStream = new this.streamModel(newStreamData);
+		await newStream.save();
+
+		this.socketController.emitStreamCreated(newStream);
+
+		if (
+			newStream.visibility === 'career' &&
+			Array.isArray(newStream.careerIds) &&
+			newStream.careerIds.length > 0
+		) {
+			try {
+				// this.userModel ya lo tienes configurado en el constructor:
+				// this.userModel = UserModel(this.app.getClientMongoose());
+				const User = this.userModel;
+
+				// Buscar usuarios que compartan al menos una carrera
+				// y que no sean el dueño del stream
+				const usersToNotify = await User.find({
+					careers: { $in: newStream.careerIds }, 
+					_id: { $ne: userId },
+				})
+					.select('_id')
+					.exec();
+
+				const Notification = NotificationModel(this.app.getClientMongoose());
+
+				for (const u of usersToNotify) {
+					const notification = new Notification({
+						recipient: u._id,           // usuario de esa carrera
+						sender: userId,             // quien crea el stream
+						type: 'stream_started',     
+						message: `Alguien de tu carrera está transmitiendo: "${newStream.title}"`,
+						data: {
+							streamId: newStream._id,
+							visibility: newStream.visibility,
+							careerIds: newStream.careerIds,
+						},
+					});
+
+					await notification.save();
+
+					this.socketController.emitNotification(
+						u._id.toString(),
+						notification
+					);
+				}
+			} catch (notifyError) {
+				console.error('Error enviando notificaciones de stream:', notifyError);
+			}
+		}
+
+		interface StreamResponse {
+			stream: IStream;
+			accessCode?: string;
+		}
+
+		const response: StreamResponse = { stream: newStream };
+
+		// Si es privado, agregar el accessCode
+		if (visibility === 'private') {
+			response.accessCode = newStream.accessCode;
+			console.log('Código de acceso enviado en la respuesta:', response.accessCode);
+		}
+
+		return res.status(StatusCodes.CREATED).json(response);
+	} catch (error) {
+		console.error('Error creando stream:', error);
+		return res
+			.status(StatusCodes.INTERNAL_SERVER_ERROR)
+			.json({ message: 'Error al crear el stream' });
 	}
+}
+
 	private async deleteStream(req: AuthRequest, res: Response): Promise<Response> {
 		try {
 			const { streamId } = req.params;

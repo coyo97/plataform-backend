@@ -127,22 +127,57 @@ export class SocketController {
 		});
 	}
 
-	private initializeMessageEvents(socket: AuthenticatedSocket): void {
-		console.log(`Inicializando eventos para el socket ${socket.id} del usuario ${socket.data.userId}`)
-		socket.on('send-message', async (data) => {
-			console.log(`Evento 'send-message' recibido en socket ${socket.id} con datos:`, data);
+private initializeMessageEvents(socket: AuthenticatedSocket): void {
+	console.log(
+		`Inicializando eventos para el socket ${socket.id} del usuario ${socket.data.userId}`,
+	);
+
+	socket.on(
+		'send-message',
+		async (
+			data: any,
+			callback?: (resp: {
+				ok: boolean;
+				message?: IMessage;
+				clientId?: string;
+				error?: string;
+			}) => void,
+		) => {
+			console.log(
+				`Evento 'send-message' recibido en socket ${socket.id} con datos:`,
+				data,
+			);
 			try {
-				const { content, receiverId, isGroupMessage, groupId } = data;
+				const {
+					content,
+					receiverId,
+					isGroupMessage,
+					groupId,
+					clientId,
+				} = data;
 				const senderId = socket.data.userId;
+
 				console.log('Datos del mensaje recibido en send-message:', {
 					senderId,
 					receiverId,
 					isGroupMessage,
 					groupId,
+					clientId,
 				});
+
 				// Validar datos
-				if (!senderId || (isGroupMessage && !groupId) || (!isGroupMessage && !receiverId)) {
+				if (
+					!senderId ||
+					(isGroupMessage && !groupId) ||
+					(!isGroupMessage && !receiverId)
+				) {
 					console.error('Faltan senderId o receiverId/groupId');
+					if (typeof callback === 'function') {
+						callback({
+							ok: false,
+							error: 'Faltan senderId o receiverId/groupId',
+						});
+					}
 					return;
 				}
 
@@ -173,17 +208,24 @@ export class SocketController {
 						select: 'profilePicture',
 					},
 				});
-				//await this.emitMessage(savedMessage, isGroupMessage, receiverId, groupId);
-				// Convertir savedMessage a IMessage
+
 				const populatedMessage = savedMessage as IMessage;
 				console.log('Mensaje guardado y populado:', populatedMessage);
 
 				// Emitir el mensaje a los usuarios conectados
 				if (isGroupMessage) {
 					// Obtener el grupo y emitir a cada miembro
-					const group = await this.groupModel.findById(groupId).populate('members');
+					const group = await this.groupModel
+						.findById(groupId)
+						.populate('members');
 					if (!group) {
 						console.error('Grupo no encontrado');
+						if (typeof callback === 'function') {
+							callback({
+								ok: false,
+								error: 'Grupo no encontrado',
+							});
+						}
 						return;
 					}
 
@@ -191,7 +233,9 @@ export class SocketController {
 						const memberId = member._id.toString();
 						const memberSocketId = this.connectedUsers.get(memberId);
 						if (memberSocketId) {
-							this.io.to(memberSocketId).emit('receive-message', populatedMessage);
+							this.io
+								.to(memberSocketId)
+								.emit('receive-message', populatedMessage);
 							// Emitir notificación a cada miembro del grupo
 							this.io.to(memberSocketId).emit('new-notification', {
 								message: `Nuevo mensaje en el grupo ${group.name}`,
@@ -203,15 +247,29 @@ export class SocketController {
 				} else {
 					// Lógica para mensajes privados
 					if (!receiverId) {
-						console.error('receiverId is undefined for a private message.');
+						console.error(
+							'receiverId is undefined for a private message.',
+						);
+						if (typeof callback === 'function') {
+							callback({
+								ok: false,
+								error: 'receiverId undefined',
+							});
+						}
 						return;
 					}
 					const receiverSocketId = this.connectedUsers.get(receiverId);
-					console.log(`Buscando socket del receptor ${receiverId}: ${receiverSocketId}`);
+					console.log(
+						`Buscando socket del receptor ${receiverId}: ${receiverSocketId}`,
+					);
 					if (receiverSocketId) {
-						console.log(`Emitiendo mensaje al receptor ${receiverId} en socket ${receiverSocketId}`);
+						console.log(
+							`Emitiendo mensaje al receptor ${receiverId} en socket ${receiverSocketId}`,
+						);
 						const sender = populatedMessage.sender as IUser;
-						this.io.to(receiverSocketId).emit('receive-message', populatedMessage);
+						this.io
+							.to(receiverSocketId)
+							.emit('receive-message', populatedMessage);
 						// Emitir una notificación para mensajes privados
 						this.io.to(receiverSocketId).emit('new-notification', {
 							message: `Nuevo mensaje de ${sender.username}`,
@@ -219,16 +277,34 @@ export class SocketController {
 							data: populatedMessage,
 						});
 					} else {
-						console.warn(`Usuario destino ${receiverId} no está conectado.`);
+						console.warn(
+							`Usuario destino ${receiverId} no está conectado.`,
+						);
 					}
+				}
+
+				if (typeof callback === 'function') {
+					callback({
+						ok: true,
+						message: populatedMessage,
+						clientId,
+					});
 				}
 			} catch (error) {
 				console.error('Error al enviar el mensaje:', error);
+				if (typeof callback === 'function') {
+					callback({
+						ok: false,
+						error: 'Error interno al enviar el mensaje',
+					});
+				}
 			}
-		});
+		},
+	);
 
-		// Otros eventos relacionados con mensajes pueden ir aquí
-	}
+	// Otros eventos relacionados con mensajes pueden ir aquí
+}
+
 
 	// Método público para emitir mensajes
 	public async emitMessage(

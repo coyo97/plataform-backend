@@ -34,6 +34,7 @@ import { UnitController    } from './routes/unit';
 import { ResourceController } from './routes/resource';
 import {AccessPoliciesController} from './routes/accessPolicies';
 import {MeController} from './routes/me';
+import {LearningController} from './routes/learning/learningController';
 
 if (process.env.NODE_ENV !== 'production') {
 	dotenv.config();
@@ -117,11 +118,13 @@ export default class App {
 		new AccessPoliciesController(this, `/${this.apiVersion}/${this.apiPrefix}`);
 		new MeController(this,`/${this.apiVersion}/${this.apiPrefix}`)
 
+		//learning
+		new LearningController(this, `/${this.apiVersion}/${this.apiPrefix}`);
 	}
 
 	private async setupDatabase() {
-//const connectionString = `mongodb://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}:${this.databasePort}/${this.databaseName}`;
-const connectionString = `mongodb+srv://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}/${this.databaseName}?retryWrites=true&w=majority&appName=Cluster0`;
+const connectionString = `mongodb://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}:${this.databasePort}/${this.databaseName}`;
+//const connectionString = `mongodb+srv://${this.databaseUser}:${this.databasePassword}@${this.databaseHost}/${this.databaseName}?retryWrites=true&w=majority&appName=Cluster0`;
 
 			console.log('connection', connectionString);
 		try {

@@ -4,7 +4,6 @@ import { Schema, Document, Mongoose, Types } from 'mongoose';
 export interface IAcademicHelp extends Document {
 	user       : Types.ObjectId;
 
-	/* NUEVOS metadatos */
 	scope: 'career' | 'general';
 	facultyId?: Types.ObjectId | null;
 	careerId?: Types.ObjectId | null;
@@ -21,7 +20,6 @@ export interface IAcademicHelp extends Document {
 	description : string;
 	fileUrl    ?: string;
 
-	/* Tipo de solicitud */
 	requestType: 'concept_question' | 'need_notes' | 'need_exam' | 'need_assignment';
 
 	status : 'open' | 'resolved';

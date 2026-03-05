@@ -14,6 +14,9 @@ import { analyzeImage } from '../moderation/images/nudenetService';
 import { analyzeVideo } from '../moderation/videos/nudenetVideoService';
 import { translateText } from '../moderation/text/translationService';
 import { analyzeComment } from '../moderation/text/toxicityService';
+import { NotificationModel } from './schemas/notification';
+import { UserModel } from './schemas/user';
+import {htmlToPlainText} from '../moderation/text/htmlToPlainText';
 
 interface AuthRequest extends Request {
 	userId?: string;
@@ -26,14 +29,18 @@ export class HelpThreadController {
 	private socket: SocketController;
 	private threadModel: ReturnType<typeof HelpThreadModel>;
 	private helpModel  : ReturnType<typeof AcademicHelpModel>;
+	private notificationModel: ReturnType<typeof NotificationModel>;
+
 
 	constructor(app: App, route: string, socketController: SocketController) {
 		this.route = route;
 		this.app = app;
+		this.notificationModel = NotificationModel(this.app.getClientMongoose());
+
 		this.socket = socketController;
-		        const client = this.app.getClientMongoose();
-        this.threadModel = HelpThreadModel(client);
-        this.helpModel   = AcademicHelpModel(client);
+		const client = this.app.getClientMongoose();
+		this.threadModel = HelpThreadModel(client);
+		this.helpModel   = AcademicHelpModel(client);
 		this.initRoutes();
 	}
 
@@ -155,15 +162,25 @@ private async postMessage(req: AuthRequest, res: Response): Promise<Response> {
 			}
 		}
 
-		if (textModerationEnabled && typeof content === 'string' && content.trim().length > 0) {
-			let contentToCheck = content;
+		const rawContent: string =
+			typeof content === 'string' ? content : '';
+
+		const plainForModeration = htmlToPlainText(rawContent);
+
+		if (textModerationEnabled && plainForModeration.length > 0) {
+			let contentToCheck = plainForModeration;
+
 			if (language && language !== 'en') {
 				try {
-					contentToCheck = await translateText(content, 'en');
+					contentToCheck = await translateText(plainForModeration, 'en');
 				} catch (e) {
-					console.error('Error en la traducción del mensaje (help message):', e);
+					console.error(
+						'Error en la traducción del mensaje (help message):',
+						e
+					);
 				}
 			}
+
 			const bad = await analyzeComment(contentToCheck);
 			if (bad) {
 				await deleteIfExists(file?.path);
@@ -178,7 +195,7 @@ private async postMessage(req: AuthRequest, res: Response): Promise<Response> {
 		const message: any = {
 			_id:        new Types.ObjectId(),
 			author:     new Types.ObjectId(userId),
-			content:    content ?? '',
+			content:    content ?? '',     
 			created_at: new Date(),
 			votes:      0,
 		};
@@ -198,6 +215,43 @@ private async postMessage(req: AuthRequest, res: Response): Promise<Response> {
 
 		await thread.save();
 
+		try {
+			const AcademicHelp = AcademicHelpModel(this.app.getClientMongoose());
+			const help = await AcademicHelp.findById(id)
+				.select('user topic') // <-- dueño = user
+				.exec();
+
+			if (help) {
+				const helpOwnerId: string = help.user.toString(); // AJUSTA ESTE CAMPO
+
+				if (helpOwnerId !== userId) {
+					const User = UserModel(this.app.getClientMongoose());
+					const replier = await User.findById(userId).select('username').exec();
+					const replierName = replier?.username ?? 'Un usuario';
+
+					const notification = new this.notificationModel({
+						recipient: helpOwnerId,
+						sender: new Types.ObjectId(userId),
+						type: 'academic_help_reply',
+						message: `${replierName} ha respondido a tu solicitud de ayuda académica`,
+						data: {
+							helpId: help._id,
+							messageId: message._id,
+						},
+					});
+
+					await notification.save();
+
+					this.socket.emitNotification(
+						helpOwnerId.toString(),
+						notification
+					);
+				}
+			}
+		} catch (err) {
+			console.error('Error creando notificación de respuesta de ayuda:', err);
+		}
+
 		this.socket.emitToRoom(id, 'new-help-message', message);
 
 		return res.status(StatusCodes.CREATED).json({ message });
@@ -213,52 +267,143 @@ private async postMessage(req: AuthRequest, res: Response): Promise<Response> {
 }
 
 
-private async markAsSolved(req: AuthRequest, res: Response): Promise<Response> {
-	try {
-		const { threadId, msgId } = req.params;
 
-		const thread = await this.threadModel.findById(threadId).exec();
+	private async markAsSolved(req: AuthRequest, res: Response): Promise<Response> {
+		try {
+			const { threadId, msgId } = req.params;
+			const userId = req.userId;
 
-		if (!thread) {
-			return res
+			if (!userId) {
+				return res
+				.status(StatusCodes.UNAUTHORIZED)
+				.json({ message: 'No autenticado' });
+			}
+
+			const thread = await this.threadModel.findById(threadId).exec();
+			if (!thread) {
+				return res
 				.status(StatusCodes.NOT_FOUND)
 				.json({ message: 'Hilo no encontrado' });
-		}
+			}
 
-		const message = (thread.messages as any).id(msgId);
-		if (!message) {
-			return res
+			if (!thread.helpId) {
+				return res
+				.status(StatusCodes.BAD_REQUEST)
+				.json({ message: 'El hilo no está asociado a una ayuda académica' });
+			}
+
+			const help = await this.helpModel
+			.findById(thread.helpId)
+			.select('user status')
+			.exec();
+
+			if (!help) {
+				return res
+				.status(StatusCodes.NOT_FOUND)
+				.json({ message: 'Ayuda académica no encontrada' });
+			}
+
+			if (help.user.toString() !== userId) {
+				return res
+				.status(StatusCodes.FORBIDDEN)
+				.json({ message: 'Solo el autor de la ayuda puede marcar una solución' });
+			}
+
+			const message: any = (thread.messages as any).id(msgId);
+			if (!message) {
+				return res
 				.status(StatusCodes.NOT_FOUND)
 				.json({ message: 'Mensaje no encontrado en este hilo' });
-		}
+			}
 
-		thread.solvedMessage = message._id;
-		await thread.save();
+			let solved: boolean;
 
-		if (thread.helpId) {
-			await this.helpModel
+			if (thread.solvedMessage && thread.solvedMessage.toString() === msgId) {
+				// estaba marcada esta misma → desmarcar
+				thread.solvedMessage = undefined;
+				solved = false;
+
+				await this.helpModel
+				.findByIdAndUpdate(
+					thread.helpId,
+					{ status: 'open', updated_at: new Date() },
+					{ new: true }
+				)
+				.exec();
+			} else {
+				// marcar como solución
+				thread.solvedMessage = message._id;
+				solved = true;
+
+				await this.helpModel
 				.findByIdAndUpdate(
 					thread.helpId,
 					{ status: 'resolved', updated_at: new Date() },
 					{ new: true }
 				)
 				.exec();
-		}
+			}
 
-		return res.status(StatusCodes.OK).json({ message: 'Marcado como solución' });
-	} catch (e) {
-		console.error('Error al marcar solución:', e);
-		return res
+			await thread.save();
+
+			/* ───────── NOTIFICACIÓN: solución marcada ───────── */
+			if (solved) {
+				try {
+					const messageAuthorId = message.author.toString();
+					const helpOwnerId = help.user.toString();
+
+					// si el autor de la respuesta es distinto al dueño de la ayuda
+					if (messageAuthorId !== helpOwnerId) {
+						const notification = new this.notificationModel({
+							recipient: messageAuthorId,
+							sender: new Types.ObjectId(helpOwnerId), // quien marcó la solución
+							type: 'academic_help_solution_marked',
+							message: 'Tu respuesta fue marcada como solución correcta',
+							data: {
+								helpId: thread.helpId,
+								threadId: thread._id,
+								messageId: message._id,
+							},
+						});
+
+						await notification.save();
+
+						this.socket.emitNotification(
+							messageAuthorId.toString(),
+							notification
+						);
+					}
+				} catch (err) {
+					console.error('Error creando notificación de solución marcada:', err);
+				}
+			}
+
+			return res.status(StatusCodes.OK).json({
+				message: solved ? 'Marcado como solución' : 'Solución desmarcada',
+				solved,
+				solvedMessage: solved ? message._id : null,
+			});
+		} catch (e) {
+			console.error('Error al marcar solución:', e);
+			return res
 			.status(StatusCodes.INTERNAL_SERVER_ERROR)
 			.json({ message: 'Error al marcar solución', error: e });
+		}
 	}
-}
 
 
 	private async voteMessage(req: AuthRequest, res: Response): Promise<Response> {
 		try {
 			const { threadId, msgId } = req.params;
-			const thread = await this.threadModel.findById(threadId);
+			const userId = req.userId;
+
+			if (!userId) {
+				return res
+				.status(StatusCodes.UNAUTHORIZED)
+				.json({ message: 'No autenticado' });
+			}
+
+			const thread = await this.threadModel.findById(threadId).exec();
 
 			if (!thread) {
 				return res
@@ -266,23 +411,127 @@ private async markAsSolved(req: AuthRequest, res: Response): Promise<Response> {
 				.json({ message: 'Hilo no encontrado' });
 			}
 
-			const message: any = (thread.messages as any).id(new Types.ObjectId(msgId));
+			const message: any = (thread.messages as any).id(msgId);
 			if (!message) {
 				return res
 				.status(StatusCodes.NOT_FOUND)
 				.json({ message: 'Mensaje no encontrado' });
 			}
 
-			message.votes += 1;
+			// (Opcional) impedir que el autor vote su propio mensaje:
+			// if (message.author.toString() === userId) {
+			//   return res
+			//     .status(StatusCodes.BAD_REQUEST)
+			//     .json({ message: 'No puedes votar tu propia respuesta' });
+			// }
+
+			// Nos aseguramos de tener array
+			if (!message.votedBy) {
+				message.votedBy = [];
+			}
+
+			const alreadyIndex = message.votedBy.findIndex(
+				(u: any) => u.toString() === userId
+			);
+
+			let voted: boolean;
+
+			if (alreadyIndex === -1) {
+				// No había votado → agregar voto
+				message.votedBy.push(new Types.ObjectId(userId));
+				voted = true;
+			} else {
+				// Ya había votado → quitar voto
+				message.votedBy.splice(alreadyIndex, 1);
+				voted = false;
+			}
+
+			message.votes = message.votedBy.length;
+
 			await thread.save();
 
-			return res.status(StatusCodes.OK).json({ message: 'Voto registrado' });
+			try {
+				const messageAuthorId = message.author.toString();
+
+				if (messageAuthorId !== userId && message.votes >= 0) {
+					const Notification = this.notificationModel;
+
+					if (message.votes === 0) {
+						await Notification.deleteOne({
+							recipient: messageAuthorId,
+							type: 'academic_help_vote',
+							'data.messageId': message._id,
+						}).exec();
+					} else {
+						const existing = await Notification.findOne({
+							recipient: messageAuthorId,
+							type: 'academic_help_vote',
+							'data.messageId': message._id,
+						}).exec();
+
+						const voteCount = message.votes;
+
+						const baseText =
+							voteCount === 1
+								? 'Tu respuesta tiene 1 voto'
+								: `Tu respuesta tiene ${voteCount} votos`;
+
+								if (existing) {
+									existing.data = {
+										...(existing.data || {}),
+										helpId: thread.helpId,
+										threadId: thread._id,
+										messageId: message._id,
+										voteCount,
+									};
+									existing.message = baseText;
+									await existing.save();
+
+									this.socket.emitNotification(
+										messageAuthorId.toString(),
+										existing
+									);
+								} else {
+									const notification = new Notification({
+										recipient: messageAuthorId,
+										sender: new Types.ObjectId(userId),
+										type: 'academic_help_vote',
+										message: baseText,
+										data: {
+											helpId: thread.helpId,
+											threadId: thread._id,
+											messageId: message._id,
+											voteCount,
+										},
+									});
+
+									await notification.save();
+									this.socket.emitNotification(
+										messageAuthorId.toString(),
+										notification
+									);
+								}
+					}
+				}
+			} catch (err) {
+				console.error('Error creando/actualizando notificación de voto:', err);
+			}
+
+			return res.status(StatusCodes.OK).json({
+				message: 'Voto actualizado',
+				voted,           // true = ahora tiene voto, false = se eliminó
+				votes: message.votes,
+				msgId: message._id,
+			});
 		} catch (e) {
+			console.error('Error al votar', e);
 			return res
 			.status(StatusCodes.INTERNAL_SERVER_ERROR)
 			.json({ message: 'Error al votar', error: e });
 		}
 	}
+
+
 private async updateMessage(req: AuthRequest, res: Response): Promise<Response> {
 	const deleteIfExists = async (p?: string) => {
 		if (!p) return;
@@ -356,21 +605,34 @@ private async updateMessage(req: AuthRequest, res: Response): Promise<Response> 
 			}
 		}
 
-		if (textModerationEnabled && typeof content === 'string' && content.trim().length > 0) {
-			let contentToCheck = content;
-			if (language && language !== 'en') {
-				try {
-					contentToCheck = await translateText(content, 'en');
-				} catch (e) {
-					console.error('Error en la traducción del mensaje (update help message):', e);
+		const hasContentUpdate =
+			typeof content === 'string' && content.trim().length > 0;
+
+		if (textModerationEnabled && hasContentUpdate) {
+			const rawContent: string = content;
+			const plainForModeration = htmlToPlainText(rawContent);
+
+			if (plainForModeration.length > 0) {
+				let contentToCheck = plainForModeration;
+
+				if (language && language !== 'en') {
+					try {
+						contentToCheck = await translateText(plainForModeration, 'en');
+					} catch (e) {
+						console.error(
+							'Error en la traducción del mensaje (update help message):',
+							e
+						);
+					}
 				}
-			}
-			const bad = await analyzeComment(contentToCheck);
-			if (bad) {
-				await deleteIfExists(file?.path);
-				return res
-					.status(StatusCodes.BAD_REQUEST)
-					.json({ message: 'El mensaje contiene lenguaje inapropiado.' });
+
+				const bad = await analyzeComment(contentToCheck);
+				if (bad) {
+					await deleteIfExists(file?.path);
+					return res
+						.status(StatusCodes.BAD_REQUEST)
+						.json({ message: 'El mensaje contiene lenguaje inapropiado.' });
+				}
 			}
 		}
 
@@ -403,6 +665,7 @@ private async updateMessage(req: AuthRequest, res: Response): Promise<Response> 
 			.json({ message: 'Error al actualizar mensaje', error: e });
 	}
 }
+
 
 
 	private async deleteMessage(req: AuthRequest, res: Response): Promise<Response> {

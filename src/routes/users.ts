@@ -66,13 +66,13 @@ private initRoutes(): void {
 
 	this.express.get(`${this.route}/me`, authMiddleware, this.getMe.bind(this));
 
-	this.express.get(`${this.route}/search`, authMiddleware, this.searchUsers.bind(this));
+	this.express.get(`${this.route}/search`, authMiddleware, dynamicPermissionMiddleware, this.searchUsers.bind(this));
 
-	this.express.get(`${this.route}/friend-requests`, authMiddleware, this.getFriendRequests.bind(this));
+	this.express.get(`${this.route}/friend-requests`, authMiddleware, dynamicPermissionMiddleware, this.getFriendRequests.bind(this));
 
-	this.express.get(`${this.route}/friends`, authMiddleware, this.getFriends.bind(this));
+	this.express.get(`${this.route}/friends`, authMiddleware, dynamicPermissionMiddleware, this.getFriends.bind(this));
 
-	this.express.get(`${this.route}/blocked-users`, authMiddleware, this.getBlockedUsers.bind(this));
+	this.express.get(`${this.route}/blocked-users`, authMiddleware, dynamicPermissionMiddleware, this.getBlockedUsers.bind(this));
 
 	this.app.getAppServer().put( `${this.route}/bulk-action`, authMiddleware, dynamicPermissionMiddleware, this.bulkAction.bind(this));
 

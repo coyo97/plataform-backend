@@ -11,7 +11,7 @@ import SocketController from './socket';
 import { Types, PipelineStage } from 'mongoose';
 import { UserModel } from './schemas/user';
 import {dynamicPermissionMiddleware} from '../middlware/permissionMiddleware';
-
+import { GroupReadStateModel } from './schemas/groupReadState';
 
 interface AuthRequest extends Request {
 	userId?: string;
@@ -21,6 +21,7 @@ export class MessageController {
 	private app: App;
 	private messageModel: ReturnType<typeof MessageModel>;
 	private groupModel: ReturnType<typeof GroupModel>;
+	private groupReadStateModel: ReturnType<typeof GroupReadStateModel>;
 	private socketController: SocketController;
 
 	constructor(app: App, route: string, socketController: SocketController) {
@@ -29,9 +30,9 @@ export class MessageController {
 		this.messageModel = MessageModel(this.app.getClientMongoose());
 		this.groupModel = GroupModel(this.app.getClientMongoose());
 		this.socketController = socketController; // Inicializar SocketController
+		this.groupReadStateModel = GroupReadStateModel(this.app.getClientMongoose());
 		this.initRoutes();
 	}
-	// Inicializa las rutas HTTP
 	private initRoutes(): void {
 		this.app.getAppServer().post( `${this.route}/messages/send`, authMiddleware, this.sendMessage.bind(this));
 
@@ -41,32 +42,39 @@ export class MessageController {
 
 		this.app.getAppServer().get( `${this.route}/messages/group/:groupId`, authMiddleware,  this.getGroupMessages.bind(this));
 
+		this.app.getAppServer().get( `${this.route}/messages/group-conversations`, authMiddleware,  this.getGroupConversations.bind(this));
+
+		this.app.getAppServer().post( `${this.route}/messages/group/mark-as-read`, authMiddleware, this.markGroupAsRead.bind(this));
+
 		this.app.getAppServer().post( `${this.route}/messages/mark-as-read`, authMiddleware, this.markAsRead.bind(this));
 
-		this.app.getAppServer().post(
-			`${this.route}/messages/send-with-file`,
-			authMiddleware,
-			async (req, res, next) => {
-				// Obtén el maxUploadSize desde la base de datos
-				const Settings = SettingsModel(this.app.getClientMongoose());
-				const settings = await Settings.findOne().exec();
-				const maxUploadSize = settings?.maxUploadSize ?? 50 * 1024 * 1024;
+		this.app.getAppServer().get( `${this.route}/messages/search`, authMiddleware,  this.searchMessages.bind(this),
+								   );
 
-				// Obtén el middleware de subida con el tamaño actualizado
-				const upload = getUploadMiddleware(maxUploadSize);
+								   this.app.getAppServer().post(
+									   `${this.route}/messages/send-with-file`,
+									   authMiddleware,
+									   async (req, res, next) => {
+										   // Obtén el maxUploadSize desde la base de datos
+										   const Settings = SettingsModel(this.app.getClientMongoose());
+										   const settings = await Settings.findOne().exec();
+										   const maxUploadSize = settings?.maxUploadSize ?? 50 * 1024 * 1024;
 
-				// Llama al middleware de multer
-				upload.single('file')(req, res, (err) => {
-					if (err) {
-						return res.status(StatusCodes.BAD_REQUEST).json({ message: err.message });
-					}
-					next();
-				});
-			}, // Utiliza el middleware de subida
-			this.sendMessageWithFile.bind(this)
-		);
-		this.app.getAppServer().delete( `${this.route}/messages/:messageId`, authMiddleware, this.deleteMessage.bind(this));
-		this.app.getAppServer().get( `${this.route}/messages/unread`, authMiddleware, this.getUnreadConversations.bind(this));
+										   // Obtén el middleware de subida con el tamaño actualizado
+										   const upload = getUploadMiddleware(maxUploadSize);
+
+										   // Llama al middleware de multer
+										   upload.single('file')(req, res, (err) => {
+											   if (err) {
+												   return res.status(StatusCodes.BAD_REQUEST).json({ message: err.message });
+											   }
+											   next();
+										   });
+									   }, // Utiliza el middleware de subida
+									   this.sendMessageWithFile.bind(this)
+								   );
+								   this.app.getAppServer().delete( `${this.route}/messages/:messageId`, authMiddleware, this.deleteMessage.bind(this));
+								   this.app.getAppServer().get( `${this.route}/messages/unread`, authMiddleware, this.getUnreadConversations.bind(this));
 	}
 	// Método para enviar un mensaje a través de HTTP
 	private async sendMessage(req: AuthRequest, res: Response): Promise<Response> {
@@ -354,116 +362,344 @@ file: req.file,
 			.json({ message: 'Error al obtener conversaciones', err });
 		}
 	}
-private async getConversations(req: AuthRequest, res: Response) {
-  try {
-    const currentUserId = req.userId!;
-    const mongoose = this.app.getClientMongoose();
-    const User = UserModel(mongoose);
+	private async getConversations(req: AuthRequest, res: Response) {
+		try {
+			const currentUserId = req.userId!;
+			const mongoose = this.app.getClientMongoose();
+			const User = UserModel(mongoose);
 
-    // paginación opcional
-    const skip = Number(req.query.skip ?? 0);
-    const limit = Number(req.query.limit ?? 30); // por defecto 30
+			// paginación opcional
+			const skip = Number(req.query.skip ?? 0);
+			const limit = Number(req.query.limit ?? 30); // por defecto 30
 
-    // 1) Traer amigos del usuario
-    const me = await User.findById(currentUserId).select('friends').lean();
-    const friendIds = (me?.friends ?? []).map((f: any) => new Types.ObjectId(String(f)));
+			// 1) Traer amigos del usuario
+			const me = await User.findById(currentUserId).select('friends').lean();
+			const friendIds = (me?.friends ?? []).map((f: any) => new Types.ObjectId(String(f)));
 
-    if (!friendIds.length) {
-      return res.status(StatusCodes.OK).json({ conversations: [] });
-    }
+			if (!friendIds.length) {
+				return res.status(StatusCodes.OK).json({ conversations: [] });
+			}
 
-    // 2 Agregación ultimo mensaje y no leídos por peer (solo DMs, no grupos)
-    const pipeline: PipelineStage[] = [
-      {
-        $match: {
-          isGroupMessage: false,
-          $or: [
-            { sender: new Types.ObjectId(currentUserId), receiver: { $in: friendIds } },
-            { receiver: new Types.ObjectId(currentUserId), sender: { $in: friendIds } },
-          ],
-        },
-      },
-      { $sort: { createdAt: -1 } }, // para que $first tome el último mensaje
-      {
-        $group: {
-          _id: {
-            // peerId = si YO soy el sender => el receiver; en otro caso => el sender
-            $cond: [
-              { $eq: ['$sender', new Types.ObjectId(currentUserId)] },
-              '$receiver',
-              '$sender',
-            ],
-          },
-          lastMessage: { $first: '$$ROOT' },
-          lastMessageAt: { $first: '$createdAt' },
-          unreadCount: {
-            $sum: {
-              $cond: [
-                {
-                  $and: [
-                    { $eq: ['$receiver', new Types.ObjectId(currentUserId)] },
-                    { $eq: ['$isRead', false] },
-                  ],
-                },
-                1,
-                0,
-              ],
-            },
-          },
-        },
-      },
-      {
-        $lookup: {
-          from: 'users',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'peer',
-        },
-      },
-      { $unwind: '$peer' },
-      {
-        $project: {
-          _id: 0,
-          peer: {
-            _id: '$peer._id',
-            username: '$peer.username',
-            profile: '$peer.profile',
-          },
-          lastMessageAt: 1,
-          unreadCount: 1,
-          lastMessage: {
-            content: '$lastMessage.content',
-            createdAt: '$lastMessage.createdAt',
-            sender: '$lastMessage.sender',
-            filePath: '$lastMessage.filePath',
-            fileType: '$lastMessage.fileType',
-          },
-        },
-      },
-      { $sort: { lastMessageAt: -1 } },
-      ...(skip ? [{ $skip: skip }] : []),
-      ...(limit ? [{ $limit: limit }] : []),
-    ];
+			// 2 Agregación ultimo mensaje y no leídos por peer (solo DMs, no grupos)
+			const pipeline: PipelineStage[] = [
+				{
+					$match: {
+						isGroupMessage: false,
+						$or: [
+							{ sender: new Types.ObjectId(currentUserId), receiver: { $in: friendIds } },
+							{ receiver: new Types.ObjectId(currentUserId), sender: { $in: friendIds } },
+						],
+					},
+				},
+				{ $sort: { createdAt: -1 } }, // para que $first tome el último mensaje
+				{
+					$group: {
+						_id: {
+							// peerId = si YO soy el sender => el receiver; en otro caso => el sender
+							$cond: [
+								{ $eq: ['$sender', new Types.ObjectId(currentUserId)] },
+								'$receiver',
+								'$sender',
+							],
+						},
+						lastMessage: { $first: '$$ROOT' },
+						lastMessageAt: { $first: '$createdAt' },
+						unreadCount: {
+							$sum: {
+								$cond: [
+									{
+										$and: [
+											{ $eq: ['$receiver', new Types.ObjectId(currentUserId)] },
+											{ $eq: ['$isRead', false] },
+										],
+									},
+									1,
+									0,
+								],
+							},
+						},
+					},
+				},
+				{
+					$lookup: {
+						from: 'users',
+						localField: '_id',
+						foreignField: '_id',
+						as: 'peer',
+					},
+				},
+				{ $unwind: '$peer' },
+				{
+					$project: {
+						_id: 0,
+						peer: {
+							_id: '$peer._id',
+							username: '$peer.username',
+							profile: '$peer.profile',
+						},
+						lastMessageAt: 1,
+						unreadCount: 1,
+						lastMessage: {
+							content: '$lastMessage.content',
+							createdAt: '$lastMessage.createdAt',
+							sender: '$lastMessage.sender',
+							filePath: '$lastMessage.filePath',
+							fileType: '$lastMessage.fileType',
+						},
+					},
+				},
+				{ $sort: { lastMessageAt: -1 } },
+				...(skip ? [{ $skip: skip }] : []),
+				...(limit ? [{ $limit: limit }] : []),
+			];
 
-    const conversations = await this.messageModel.aggregate(pipeline).exec();
+			const conversations = await this.messageModel.aggregate(pipeline).exec();
 
-    // 3) Agregar amigos sin mensajes (al final)
-    const withMsgs = new Set(conversations.map((c: any) => String(c.peer._id)));
-    const friendsWithoutMsgs = friendIds.filter((fid) => !withMsgs.has(String(fid)));
-    if (friendsWithoutMsgs.length) {
-      const rest = await User.find({ _id: { $in: friendsWithoutMsgs } })
-        .select('_id username profile')
-        .lean();
-    }
+			const withMsgs = new Set(conversations.map((c: any) => String(c.peer._id)));
+			const friendsWithoutMsgs = friendIds.filter((fid) => !withMsgs.has(String(fid)));
+			if (friendsWithoutMsgs.length) {
+				const rest = await User.find({ _id: { $in: friendsWithoutMsgs } })
+				.select('_id username profile')
+				.lean();
+			}
 
-    return res.status(StatusCodes.OK).json({ conversations });
-  } catch (error) {
-    console.error('Error getConversations:', error);
-    return res
-      .status(StatusCodes.INTERNAL_SERVER_ERROR)
-      .json({ message: 'Error al obtener conversaciones', error });
-  }
-}
+			return res.status(StatusCodes.OK).json({ conversations });
+		} catch (error) {
+			console.error('Error getConversations:', error);
+			return res
+			.status(StatusCodes.INTERNAL_SERVER_ERROR)
+			.json({ message: 'Error al obtener conversaciones', error });
+		}
+	}
+	private async searchMessages(req: AuthRequest, res: Response): Promise<Response> {
+		try {
+			const currentUserId = req.userId!;
+			const { chatId, q, isGroup, skip = 0, limit = 20 } = req.query as {
+				chatId?: string;
+				q?: string;
+				isGroup?: string;
+				skip?: string;
+				limit?: string;
+			};
+
+			if (!chatId || !q) {
+				return res
+				.status(StatusCodes.BAD_REQUEST)
+				.json({ message: 'Parámetros chatId y q son obligatorios' });
+			}
+
+			const isGroupBool =
+				isGroup === 'true' || isGroup === '1' || isGroup === 'yes';
+
+			const numberSkip = Number(skip) || 0;
+			const numberLimit = Math.min(Number(limit) || 20, 100);
+
+			const textFilter = {
+				content: { $regex: q, $options: 'i' },
+			};
+
+			let baseFilter: any;
+
+			if (isGroupBool) {
+				baseFilter = {
+					isGroupMessage: true,
+					groupId: new Types.ObjectId(chatId),
+				};
+			} else {
+				baseFilter = {
+					isGroupMessage: false,
+					$or: [
+						{
+							sender: new Types.ObjectId(currentUserId),
+							receiver: new Types.ObjectId(chatId),
+						},
+						{
+							sender: new Types.ObjectId(chatId),
+							receiver: new Types.ObjectId(currentUserId),
+						},
+					],
+				};
+			}
+
+			const filter = {
+				...baseFilter,
+				...textFilter,
+			};
+
+			const messages = await this.messageModel
+			.find(filter)
+			.sort({ createdAt: -1 })
+			.skip(numberSkip)
+			.limit(numberLimit)
+			.populate({
+				path: 'sender',
+				select: 'username',
+				populate: {
+					path: 'profile',
+					select: 'profilePicture',
+				},
+			})
+			.exec();
+
+			return res.status(StatusCodes.OK).json({ messages });
+		} catch (error) {
+			console.error('Error al buscar mensajes:', error);
+			return res
+			.status(StatusCodes.INTERNAL_SERVER_ERROR)
+			.json({ message: 'Error al buscar mensajes', error });
+		}
+	}
+	private async markGroupAsRead(req: AuthRequest, res: Response): Promise<Response> {
+		try {
+			const userId = req.userId;
+			const { groupId } = req.body;
+
+			if (!userId || !groupId) {
+				return res
+				.status(StatusCodes.BAD_REQUEST)
+				.json({ message: 'Faltan userId o groupId' });
+			}
+
+			const now = new Date();
+
+			const updated = await this.groupReadStateModel.findOneAndUpdate(
+				{
+					groupId: new Types.ObjectId(groupId),
+					userId:  new Types.ObjectId(userId),
+				},
+				{
+					$set: { lastReadAt: now },
+				},
+				{
+					upsert: true,
+					new: true,
+				}
+			).exec();
+
+			return res.status(StatusCodes.OK).json({ readState: updated });
+		} catch (error) {
+			console.error('Error markGroupAsRead:', error);
+			return res
+			.status(StatusCodes.INTERNAL_SERVER_ERROR)
+			.json({ message: 'Error al marcar grupo como leído', error });
+		}
+	}
+	private async getGroupConversations(req: AuthRequest, res: Response): Promise<Response> {
+		try {
+			const currentUserId = req.userId!;
+			const mongoose = this.app.getClientMongoose();
+			const User = UserModel(mongoose);
+
+			const userObjectId = new Types.ObjectId(currentUserId);
+
+			const skip = Number(req.query.skip ?? 0);
+			const limit = Number(req.query.limit ?? 30);
+
+			const myGroups = await this.groupModel
+			.find({ members: userObjectId })
+			.select('_id name')
+			.lean()
+			.exec();
+
+			if (!myGroups.length) {
+				return res.status(StatusCodes.OK).json({ conversations: [] });
+			}
+
+			const groupIds = myGroups.map((g: any) => g._id);
+
+			const pipeline: PipelineStage[] = [
+				{
+					$match: {
+						isGroupMessage: true,
+						groupId: { $in: groupIds },
+					},
+				},
+				{
+					$lookup: {
+						from: 'groupreads',
+						let: { gid: '$groupId' },
+						pipeline: [
+							{
+								$match: {
+									$expr: {
+										$and: [
+											{ $eq: ['$groupId', '$$gid'] },
+											{ $eq: ['$userId', userObjectId] },
+										],
+									},
+								},
+							},
+							{ $limit: 1 },
+						],
+						as: 'readState',
+					},
+				},
+				{
+					$addFields: {
+						lastReadAt: {
+							$ifNull: [{ $arrayElemAt: ['$readState.lastReadAt', 0] }, new Date(0)],
+						},
+					},
+				},
+				{ $sort: { createdAt: -1 } },
+				{
+					$group: {
+						_id: '$groupId',
+						lastMessage: { $first: '$$ROOT' },
+						lastMessageAt: { $first: '$createdAt' },
+						unreadCount: {
+							$sum: {
+								$cond: [
+									{ $gt: ['$createdAt', '$lastReadAt'] },
+									1,
+									0,
+								],
+							},
+						},
+					},
+				},
+				{
+					$lookup: {
+						from: 'groups',
+						localField: '_id',
+						foreignField: '_id',
+						as: 'group',
+					},
+				},
+				{ $unwind: '$group' },
+				{
+					$project: {
+						_id: 0,
+						group: {
+							_id: '$group._id',
+							name: '$group.name',
+						},
+						lastMessageAt: 1,
+						unreadCount: 1,
+						lastMessage: {
+							content: '$lastMessage.content',
+							createdAt: '$lastMessage.createdAt',
+							sender: '$lastMessage.sender',
+							filePath: '$lastMessage.filePath',
+							fileType: '$lastMessage.fileType',
+						},
+					},
+				},
+				{ $sort: { lastMessageAt: -1 } },
+				...(skip ? [{ $skip: skip }] : []),
+				...(limit ? [{ $limit: limit }] : []),
+			];
+
+			const conversations = await this.messageModel.aggregate(pipeline).exec();
+
+			return res.status(StatusCodes.OK).json({ conversations });
+		} catch (error) {
+			console.error('Error getGroupConversations:', error);
+			return res
+			.status(StatusCodes.INTERNAL_SERVER_ERROR)
+			.json({ message: 'Error al obtener conversaciones de grupos', error });
+		}
+	}
 
 
 }

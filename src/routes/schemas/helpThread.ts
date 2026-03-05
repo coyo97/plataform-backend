@@ -1,3 +1,4 @@
+// models/helpThread.ts
 import mongoose, { Schema, Document, Mongoose } from 'mongoose';
 
 export interface HelpMessage {
@@ -7,6 +8,7 @@ export interface HelpMessage {
 	attachments?: string[];
 	created_at: Date;
 	votes: number;
+	votedBy?: mongoose.Types.ObjectId[]; 
 }
 
 export interface IHelpThread extends Document {
@@ -20,13 +22,25 @@ const helpMessageSchema = new Schema<HelpMessage>({
 	content: { type: String, required: true },
 	attachments: [{ type: String }],
 	created_at: { type: Date, default: Date.now },
-	votes: { type: Number, default: 0 }
+	votes: { type: Number, default: 0 },
+	votedBy: [
+		{
+			type: mongoose.Schema.Types.ObjectId,
+			ref: 'User',
+			default: [],
+		},
+	],
 });
 
 const helpThreadSchema = new Schema<IHelpThread>({
-	helpId: { type: mongoose.Schema.Types.ObjectId, ref: 'AcademicHelp', required: true, unique: true },
+	helpId: {
+		type: mongoose.Schema.Types.ObjectId,
+		ref: 'AcademicHelp',
+		required: true,
+		unique: true,
+	},
 	messages: [helpMessageSchema],
-	solvedMessage: { type: mongoose.Schema.Types.ObjectId }
+	solvedMessage: { type: mongoose.Schema.Types.ObjectId },
 });
 
 export const HelpThreadModel = (mongoose: Mongoose) => {
