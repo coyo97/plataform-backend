@@ -27,9 +27,9 @@ export async function ensureCollection(vectorSize: number): Promise<void> {
 }
 
 export async function upsertPoint(pointId: number, vector: number[], payload: Payload): Promise<void> {
-  await axios.put(`${BASE}/collections/${QDRANT_COLLECTION}/points`, {
-    points: [{ id: pointId, vector, payload }],
-  });
+	await axios.put(`${BASE}/collections/${QDRANT_COLLECTION}/points`, {
+		points: [{ id: pointId, vector, payload }],
+	});
 }
 
 export async function searchPoints(vector: number[], filter: any, limit = 8) {
@@ -40,4 +40,16 @@ export async function searchPoints(vector: number[], filter: any, limit = 8) {
 		with_payload: true,
 	});
 	return data?.result ?? [];
+}
+
+export async function deletePointsByDocumentId(userId: string, documentId: string): Promise<void> {
+	// Borra todos los puntos cuyo payload coincida con userId y documentId
+	await axios.post(`${BASE}/collections/${QDRANT_COLLECTION}/points/delete`, {
+		filter: {
+			must: [
+				{ key: "userId", match: { value: String(userId) } },
+				{ key: "documentId", match: { value: String(documentId) } },
+			],
+		},
+	});
 }

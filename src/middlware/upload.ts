@@ -7,6 +7,7 @@ import { FileFormatModel } from '../routes/schemas/fileFormat';
 import mongoose from 'mongoose'; // Importa mongoose si no lo has hecho
 import App from '../app'; // Importa tu clase App para obtener el cliente de Mongoose
 import { SettingsModel } from '../routes/schemas/settings';
+import { lookup } from "mime-types";
 
 
 // Variable global para almacenar el maxUploadSize
@@ -34,27 +35,33 @@ const storage = multer.diskStorage({
 });
 
 // Filtro de archivos dinámico
+
+
 const fileFilter = async (req: Request, file: Express.Multer.File, cb: any) => {
   try {
-    // Obtén el cliente de Mongoose desde la instancia de la aplicación
-    const app = new App();
-    const mongooseClient = app.getClientMongoose();
-
-    const FileFormat = FileFormatModel(mongooseClient);
-
-    // Obtén la lista de formatos habilitados desde la base de datos
-    const allowedFormats = await FileFormat.find({ enabled: true }).exec();
-    const allowedMimes = allowedFormats.map((format) => format.mimeType);
-
-    // Verificar si el tipo de archivo es aceptado
-    if (allowedMimes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Tipo de archivo no permitido'), false);
+    if (mongoose.connection.readyState !== 1) {
+      return cb(new Error("DB no conectada aún (upload filter)"), false);
     }
+
+    const FileFormat = FileFormatModel(mongoose);
+    const allowedFormats = await FileFormat.find({ enabled: true }).exec();
+    const allowedMimes = allowedFormats.map((f) => f.mimeType);
+
+    // 1) mimetype que reporta el cliente
+    const clientMime = file.mimetype;
+
+    // 2) fallback: derivar por extensión del nombre original
+    const extMime = (lookup(file.originalname) || "").toString();
+
+    const isAllowed =
+      allowedMimes.includes(clientMime) ||
+      (extMime && allowedMimes.includes(extMime));
+
+    if (isAllowed) cb(null, true);
+    else cb(new Error("Tipo de archivo no permitido"), false);
   } catch (error) {
-    console.error('Error en fileFilter:', error);
-    cb(new Error('Error al verificar el tipo de archivo'), false);
+    console.error("Error en fileFilter:", error);
+    cb(new Error("Error al verificar el tipo de archivo"), false);
   }
 };
 

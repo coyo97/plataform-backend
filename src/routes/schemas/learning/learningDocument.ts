@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document, Mongoose, Types } from "mongoose";
 
-export type LearningSourceType = "note" | "pdf" | "video" | "link" | "book";
+export type LearningSourceType = "note" | "pdf" | "docx" | "txt" | "video" | "link" | "book" | "audio" | "image";
 
 export interface ILearningDocument extends Document {
 	user: Types.ObjectId;
@@ -26,7 +26,7 @@ const LearningDocumentSchema = new Schema<ILearningDocument>({
 	topicId: { type: Schema.Types.ObjectId, ref: "LearningTopic", index: true },
 
 	title: { type: String, required: true, trim: true, maxlength: 200 },
-	sourceType: { type: String, required: true, enum: ["note", "pdf", "video", "link", "book"], index: true },
+	sourceType: { type: String, required: true, enum: ["note", "pdf", "docx", "txt", "video", "link", "book", "audio", "image"], index: true },
 
 	content: { type: String },
 	fileUrl: { type: String, trim: true },
