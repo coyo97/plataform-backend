@@ -169,6 +169,13 @@ export class LearningController {
 		// Subjects CRUD
 		this.app.getAppServer().put(`${this.route}/learning/subjects/:id`, authMiddleware, this.updateSubject.bind(this));
 		this.app.getAppServer().delete(`${this.route}/learning/subjects/:id`, authMiddleware, this.deleteSubject.bind(this));
+
+		this.app.getAppServer().post(
+  `${this.route}/learning/documents/:id/transcribe`,
+  authMiddleware,
+  this.transcribeDocument.bind(this)
+);
+
 	}
 
 	private async createSubject(req: AuthRequest, res: Response): Promise<Response> {
@@ -684,157 +691,276 @@ export class LearningController {
 			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: "Error", error: error.message });
 		}
 	}
-	private async uploadVideoDocument(req: AuthRequest, res: Response): Promise<Response> {
-		const deleteIfExists = async (p?: string) => {
-			if (!p) return;
-			try { await fs.unlink(p); } catch {}
-		};
+private async uploadVideoDocument(req: AuthRequest, res: Response): Promise<Response> {
+  const deleteIfExists = async (p?: string) => {
+    if (!p) return;
+    try { await fs.unlink(p); } catch {}
+  };
 
-		try {
-			const userId = req.userId;
-			if (!userId) return res.status(StatusCodes.UNAUTHORIZED).json({ message: "Usuario no autenticado" });
+  const startedAt = Date.now();
 
-			const { subjectId, topicId, title, language } = req.body;
-			const file = (req as any).file as Express.Multer.File | undefined;
+  try {
+    const userId = req.userId;
+    console.log("[UPLOAD VIDEO] start", {
+      at: new Date().toISOString(),
+      userId,
+      bodyKeys: Object.keys(req.body ?? {}),
+    });
 
-			if (!file) return res.status(StatusCodes.BAD_REQUEST).json({ message: "Archivo requerido (file)" });
+    if (!userId) {
+      console.log("[UPLOAD VIDEO] unauthorized (no userId)");
+      return res.status(StatusCodes.UNAUTHORIZED).json({ message: "Usuario no autenticado" });
+    }
 
-			if (!subjectId || !Types.ObjectId.isValid(subjectId)) {
-				await deleteIfExists(file.path);
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: "subjectId inválido" });
-			}
-			if (topicId && !Types.ObjectId.isValid(topicId)) {
-				await deleteIfExists(file.path);
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: "topicId inválido" });
-			}
+    const { subjectId, topicId, title, language } = req.body;
+    const file = (req as any).file as Express.Multer.File | undefined;
 
-			if (!file.mimetype.startsWith("video/")) {
-				await deleteIfExists(file.path);
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: "El archivo no es video/*" });
-			}
+    if (!file) {
+      console.log("[UPLOAD VIDEO] missing file");
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "Archivo requerido (file)" });
+    }
 
-			const docTitle =
-				typeof title === "string" && title.trim().length > 0 ? title.trim() : file.originalname;
+    console.log("[UPLOAD VIDEO] file received", {
+      mimetype: file.mimetype,
+      originalname: file.originalname,
+      filename: file.filename,
+      path: file.path,
+      size: file.size,
+    });
 
-			const wavPath = await extractAudioToWav(file.path);
+    if (!subjectId || !Types.ObjectId.isValid(subjectId)) {
+      console.log("[UPLOAD VIDEO] invalid subjectId", { subjectId });
+      await deleteIfExists(file.path);
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "subjectId inválido" });
+    }
 
-			const result = await transcribeAudio(wavPath, typeof language === "string" ? language : undefined);
+    if (topicId && !Types.ObjectId.isValid(topicId)) {
+      console.log("[UPLOAD VIDEO] invalid topicId", { topicId });
+      await deleteIfExists(file.path);
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "topicId inválido" });
+    }
 
-			await deleteIfExists(wavPath);
+    if (!file.mimetype.startsWith("video/")) {
+      console.log("[UPLOAD VIDEO] wrong mimetype (expected video/*)", { mimetype: file.mimetype });
+      await deleteIfExists(file.path);
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "El archivo no es video/*" });
+    }
 
-			if (result?.error) {
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: "Error transcribiendo", error: result.error });
-			}
+    const docTitle =
+      typeof title === "string" && title.trim().length > 0 ? title.trim() : file.originalname;
 
-			const text = (result?.text ?? "").trim();
-			if (!text || text.length < 20) {
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: "Transcripción vacía o muy corta." });
-			}
+    console.log("[UPLOAD VIDEO] extracting wav with ffmpeg...");
+    const t0 = Date.now();
+    const wavPath = await extractAudioToWav(file.path);
+    console.log("[UPLOAD VIDEO] wav created", { wavPath, ms: Date.now() - t0 });
 
-			const doc = await this.documentModel.create({
-				user: userId,
-				subjectId,
-				topicId,
-				title: docTitle,
-				sourceType: "video",
-				content: text,
-				fileUrl: `uploads/${file.filename}`,
-				originalName: file.originalname,
-				status: "draft",
-				updated_at: new Date(),
-			});
+    console.log("[UPLOAD VIDEO] whisper transcribe...");
+    const t1 = Date.now();
+    const result = await transcribeAudio(wavPath, typeof language === "string" ? language : undefined);
+    console.log("[UPLOAD VIDEO] whisper done", { ms: Date.now() - t1, hasError: !!result?.error });
 
-			// OPCIONAL: auto-indexar aquí (si quieres)
-			// Puedes llamar a this.indexDocument internamente, pero para MVP mejor manual:
-			// POST /learning/documents/:id/index
+    await deleteIfExists(wavPath);
 
-			return res.status(StatusCodes.CREATED).json({
-				document: doc,
-				transcription: {
-					language: result.language,
-					duration: result.duration,
-				},
-			});
-		} catch (error: any) {
-			const file = (req as any).file as Express.Multer.File | undefined;
-			if (file?.path) {
-				try { await fs.unlink(file.path); } catch {}
-			}
-			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: "Error", error: error.message });
-		}
-	}
-	private async uploadAudioDocument(req: AuthRequest, res: Response): Promise<Response> {
-		const deleteIfExists = async (p?: string) => {
-			if (!p) return;
-			try { await fs.unlink(p); } catch {}
-		};
+    if (result?.error) {
+      console.log("[UPLOAD VIDEO] whisper error", { error: result.error });
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "Error transcribiendo", error: result.error });
+    }
 
-		try {
-			const userId = req.userId;
-			if (!userId) return res.status(StatusCodes.UNAUTHORIZED).json({ message: "Usuario no autenticado" });
+    const text = (result?.text ?? "").trim();
+    console.log("[UPLOAD VIDEO] text length", { len: text.length });
 
-			const { subjectId, topicId, title, language } = req.body;
-			const file = (req as any).file as Express.Multer.File | undefined;
+    if (!text || text.length < 20) {
+      console.log("[UPLOAD VIDEO] transcription too short", { preview: text.slice(0, 80) });
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "Transcripción vacía o muy corta." });
+    }
 
-			if (!file) return res.status(StatusCodes.BAD_REQUEST).json({ message: "Archivo requerido (file)" });
+    console.log("[UPLOAD VIDEO] creating document (draft)", { docTitle });
 
-			if (!subjectId || !Types.ObjectId.isValid(subjectId)) {
-				await deleteIfExists(file.path);
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: "subjectId inválido" });
-			}
-			if (topicId && !Types.ObjectId.isValid(topicId)) {
-				await deleteIfExists(file.path);
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: "topicId inválido" });
-			}
+    const doc = await this.documentModel.create({
+      user: userId,
+      subjectId,
+      topicId,
+      title: docTitle,
+      sourceType: "video",
+      content: text,
+      fileUrl: `uploads/${file.filename}`,
+      originalName: file.originalname,
+      status: "draft",
+      updated_at: new Date(),
+    });
 
-			if (!file.mimetype.startsWith("audio/")) {
-				await deleteIfExists(file.path);
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: "El archivo no es audio/*" });
-			}
+    console.log("[UPLOAD VIDEO] document created", {
+      documentId: String(doc._id),
+      totalMs: Date.now() - startedAt,
+    });
 
-			const docTitle =
-				typeof title === "string" && title.trim().length > 0 ? title.trim() : file.originalname;
+    return res.status(StatusCodes.CREATED).json({
+      document: doc,
+      transcription: { language: result.language, duration: result.duration },
+    });
+  } catch (error: any) {
+    console.log("[UPLOAD VIDEO] crash", { message: error?.message, stack: error?.stack });
 
-			const wavPath = await extractAudioToWav(file.path);
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (file?.path) {
+      try { await fs.unlink(file.path); } catch {}
+    }
 
-			const result = await transcribeAudio(wavPath, typeof language === "string" ? language : undefined);
+    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: "Error", error: error.message });
+  }
+}
+private async uploadAudioDocument(req: AuthRequest, res: Response): Promise<Response> {
+  const deleteIfExists = async (p?: string) => {
+    if (!p) return;
+    try { await fs.unlink(p); } catch {}
+  };
 
-			await deleteIfExists(wavPath);
+  const startedAt = Date.now();
 
-			if (result?.error) {
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: "Error transcribiendo", error: result.error });
-			}
+  try {
+    const userId = req.userId;
+    console.log("[UPLOAD AUDIO] start", {
+      at: new Date().toISOString(),
+      userId,
+      query: req.query,
+      bodyKeys: Object.keys(req.body ?? {}),
+    });
 
-			const text = (result?.text ?? "").trim();
-			if (!text || text.length < 20) {
-				return res.status(StatusCodes.BAD_REQUEST).json({ message: "Transcripción vacía o muy corta." });
-			}
+    if (!userId) {
+      console.log("[UPLOAD AUDIO] unauthorized (no userId)");
+      return res.status(StatusCodes.UNAUTHORIZED).json({ message: "Usuario no autenticado" });
+    }
 
-			const doc = await this.documentModel.create({
-				user: userId,
-				subjectId,
-				topicId,
-				title: docTitle,
-				sourceType: "audio", // agrega "audio" al enum si quieres (o usa "video")
-				content: text,
-				fileUrl: `uploads/${file.filename}`,
-				originalName: file.originalname,
-				status: "draft",
-				updated_at: new Date(),
-			});
+    const { subjectId, topicId, title, language } = req.body;
+    const file = (req as any).file as Express.Multer.File | undefined;
 
-			return res.status(StatusCodes.CREATED).json({
-				document: doc,
-				transcription: { language: result.language, duration: result.duration },
-			});
-		} catch (error: any) {
-			const file = (req as any).file as Express.Multer.File | undefined;
-			if (file?.path) {
-				try { await fs.unlink(file.path); } catch {}
-			}
-			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: "Error", error: error.message });
-		}
-	}
+    const transcribe = String((req.query as any)?.transcribe ?? "true").toLowerCase() !== "false";
+    const autoIndex  = String((req.query as any)?.autoIndex  ?? "false").toLowerCase() === "true";
+
+    console.log("[UPLOAD AUDIO] flags", { transcribe, autoIndex, language });
+
+    if (!file) {
+      console.log("[UPLOAD AUDIO] missing file");
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "Archivo requerido (file)" });
+    }
+
+    console.log("[UPLOAD AUDIO] file received", {
+      mimetype: file.mimetype,
+      originalname: file.originalname,
+      filename: file.filename,
+      path: file.path,
+      size: file.size,
+    });
+
+    if (!subjectId || !Types.ObjectId.isValid(subjectId)) {
+      console.log("[UPLOAD AUDIO] invalid subjectId", { subjectId });
+      await deleteIfExists(file.path);
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "subjectId inválido" });
+    }
+
+    if (topicId && !Types.ObjectId.isValid(topicId)) {
+      console.log("[UPLOAD AUDIO] invalid topicId", { topicId });
+      await deleteIfExists(file.path);
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "topicId inválido" });
+    }
+
+    if (!file.mimetype.startsWith("audio/")) {
+      console.log("[UPLOAD AUDIO] wrong mimetype (expected audio/*)", { mimetype: file.mimetype });
+      await deleteIfExists(file.path);
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "El archivo no es audio/*" });
+    }
+
+    const docTitle =
+      typeof title === "string" && title.trim().length > 0 ? title.trim() : file.originalname;
+
+    console.log("[UPLOAD AUDIO] creating document (draft)", { docTitle });
+
+    const doc = await this.documentModel.create({
+      user: userId,
+      subjectId,
+      topicId,
+      title: docTitle,
+      sourceType: "audio",
+      content: "",
+      fileUrl: `uploads/${file.filename}`,
+      originalName: file.originalname,
+      status: "draft",
+      updated_at: new Date(),
+    });
+
+    console.log("[UPLOAD AUDIO] document created", { documentId: String(doc._id) });
+
+    if (!transcribe) {
+      console.log("[UPLOAD AUDIO] transcribe=false -> returning early", { ms: Date.now() - startedAt });
+      return res.status(StatusCodes.CREATED).json({
+        document: doc,
+        message: "Audio subido. Transcribe cuando quieras con /learning/documents/:id/transcribe",
+      });
+    }
+
+    console.log("[UPLOAD AUDIO] extracting wav with ffmpeg...");
+    const t0 = Date.now();
+    const wavPath = await extractAudioToWav(file.path);
+    console.log("[UPLOAD AUDIO] wav created", { wavPath, ms: Date.now() - t0 });
+
+    console.log("[UPLOAD AUDIO] whisper transcribe...");
+    const t1 = Date.now();
+    const result = await transcribeAudio(wavPath, typeof language === "string" ? language : undefined);
+    console.log("[UPLOAD AUDIO] whisper done", { ms: Date.now() - t1, hasError: !!result?.error });
+
+    await deleteIfExists(wavPath);
+
+    if (result?.error) {
+      console.log("[UPLOAD AUDIO] whisper error", { error: result.error });
+      return res.status(StatusCodes.BAD_REQUEST).json({
+        message: "Error transcribiendo",
+        error: result.error,
+        documentId: doc._id,
+      });
+    }
+
+    const text = (result?.text ?? "").trim();
+    console.log("[UPLOAD AUDIO] text length", { len: text.length });
+
+    if (!text || text.length < 20) {
+      console.log("[UPLOAD AUDIO] transcription too short", { preview: text.slice(0, 80) });
+      return res.status(StatusCodes.BAD_REQUEST).json({
+        message: "Transcripción vacía o muy corta.",
+        documentId: doc._id,
+      });
+    }
+
+    doc.content = text;
+    doc.status = "draft";
+    doc.updated_at = new Date();
+    await doc.save();
+
+    console.log("[UPLOAD AUDIO] saved transcription", {
+      documentId: String(doc._id),
+      totalMs: Date.now() - startedAt,
+    });
+
+    if (autoIndex) {
+      console.log("[UPLOAD AUDIO] autoIndex=true (no-op unless you trigger index here)", {
+        documentId: String(doc._id),
+      });
+    }
+
+    return res.status(StatusCodes.CREATED).json({
+      document: doc,
+      transcription: { language: result.language, duration: result.duration },
+    });
+  } catch (error: any) {
+    console.log("[UPLOAD AUDIO] crash", { message: error?.message, stack: error?.stack });
+
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (file?.path) {
+      try { await fs.unlink(file.path); } catch {}
+    }
+
+    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: "Error", error: error.message });
+  }
+}
 	private async uploadImageOcrDocument(req: AuthRequest, res: Response): Promise<Response> {
 		const deleteIfExists = async (p?: string) => {
 			if (!p) return;
@@ -893,6 +1019,63 @@ export class LearningController {
 			return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: "Error", error: error.message });
 		}
 	}
+	private async transcribeDocument(req: AuthRequest, res: Response): Promise<Response> {
+  const deleteIfExists = async (p?: string) => {
+    if (!p) return;
+    try { await fs.unlink(p); } catch {}
+  };
+
+  try {
+    const userId = req.userId;
+    if (!userId) return res.status(StatusCodes.UNAUTHORIZED).json({ message: "Usuario no autenticado" });
+
+    const { id } = req.params;
+    if (!id || !Types.ObjectId.isValid(id)) {
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "documentId inválido" });
+    }
+
+    const { language } = req.body;
+
+    const doc = await this.documentModel.findOne({ _id: id, user: userId }).exec();
+    if (!doc) return res.status(StatusCodes.NOT_FOUND).json({ message: "Documento no encontrado" });
+
+    if (doc.sourceType !== "audio" && doc.sourceType !== "video") {
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "Este documento no es audio/video." });
+    }
+
+    if (!doc.fileUrl) {
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "Documento sin fileUrl." });
+    }
+
+    // tu fileUrl suele ser "uploads/xxx". Convertimos a path local relativo al proyecto
+    const filePath = String(doc.fileUrl);
+
+    const wavPath = await extractAudioToWav(filePath);
+    const result = await transcribeAudio(wavPath, typeof language === "string" ? language : undefined);
+    await deleteIfExists(wavPath);
+
+    if (result?.error) {
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "Error transcribiendo", error: result.error });
+    }
+
+    const text = (result?.text ?? "").trim();
+    if (!text || text.length < 20) {
+      return res.status(StatusCodes.BAD_REQUEST).json({ message: "Transcripción vacía o muy corta." });
+    }
+
+    doc.content = text;
+    doc.status = "draft"; // para que luego indexe con tu botón
+    doc.updated_at = new Date();
+    await doc.save();
+
+    return res.status(StatusCodes.OK).json({
+      document: doc,
+      transcription: { language: result.language, duration: result.duration },
+    });
+  } catch (error: any) {
+    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: "Error", error: error.message });
+  }
+}
 	private async getDocumentById(req: AuthRequest, res: Response): Promise<Response> {
 		try {
 			const userId = req.userId;

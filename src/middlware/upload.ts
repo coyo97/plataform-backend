@@ -53,6 +53,13 @@ const fileFilter = async (req: Request, file: Express.Multer.File, cb: any) => {
     // 2) fallback: derivar por extensión del nombre original
     const extMime = (lookup(file.originalname) || "").toString();
 
+	console.log("[UPLOAD FILTER] incoming", {
+  mimetype: file.mimetype,
+  originalname: file.originalname,
+  size: (file as any).size,
+});
+console.log("[UPLOAD FILTER] allowedMimes", allowedMimes);
+
     const isAllowed =
       allowedMimes.includes(clientMime) ||
       (extMime && allowedMimes.includes(extMime));

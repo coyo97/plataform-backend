@@ -14,8 +14,7 @@ export interface ILearningDocument extends Document {
 	fileUrl?: string;        // /uploads/...
 	originalName?: string;   // nombre original del archivo
 
-	status: "draft" | "indexed";
-
+status: "draft" | "indexed" | "processing" | "failed"
 	created_at: Date;
 	updated_at: Date;
 }
@@ -32,7 +31,7 @@ const LearningDocumentSchema = new Schema<ILearningDocument>({
 	fileUrl: { type: String, trim: true },
 	originalName: { type: String, trim: true },
 
-	status: { type: String, enum: ["draft", "indexed"], default: "draft", index: true },
+	status: { type: String, enum: ["draft", "indexed", "processing", "failed"], default: "draft", index: true },
 
 	created_at: { type: Date, default: Date.now },
 	updated_at: { type: Date, default: Date.now },
