@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "es6", /**/
-    "module": "none",
+	"module": "none",
     "moduleResolution": "node",
     "baseUrl": ".",
     "paths": {
@@ -16,6 +16,7 @@
     "strict": true,
     "noImplicitAny": true,
     "skipLibCheck": true,
+	 "typeRoots": ["./node_modules/@types", "./src/types"], // Correcto: Incluye la carpeta de tipos
   },
   "include": [
     "src/**/*"
